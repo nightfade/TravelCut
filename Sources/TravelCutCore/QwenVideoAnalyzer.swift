@@ -13,6 +13,7 @@ actor QwenVideoAnalyzer {
         let completenessScore: Double
         let label: String
         let reason: String
+        let theme: String?
         let start: Double?
         let end: Double?
 
@@ -23,6 +24,7 @@ actor QwenVideoAnalyzer {
             case completenessScore = "completeness_score"
             case label
             case reason
+            case theme
             case start
             case end
         }
@@ -66,8 +68,8 @@ actor QwenVideoAnalyzer {
         let timestamps = frames.enumerated().map { index, frame in
             "第\(index + 1)帧=\(formatted(frame.time))秒"
         }.joined(separator: "，")
-        let themeGuidance = HighlightTheme.allCases
-            .filter(selectedThemes.contains)
+        let orderedThemes = HighlightTheme.allCases.filter(selectedThemes.contains)
+        let themeGuidance = orderedThemes
             .map(\.qwenGuidance)
             .joined(separator: "；")
         let prompt = """
@@ -78,6 +80,7 @@ actor QwenVideoAnalyzer {
         对清晰稳定且符合已选内容的片段应倾向保留，不要求罕见或戏剧化；尤其不得仅因沿途风景常见而拒绝它。
         明显误拍、遮挡、严重失焦、无有效内容或与已选内容无关时拒绝。起止时间围绕自然事件，不要求固定长度。
         label 必须是2到8个汉字，reason 必须使用中文且不超过30个汉字。
+        theme 从这些内容类型中选一个最贴切的：\(orderedThemes.map(\.rawValue).joined(separator: "、"))。
         只输出 JSON。分数范围 0 到 1。start 和 end 是相对此候选片段的秒数；去掉举机、收机、明显晃动和事件结束后的空白，
         但保留动作、对话或景观变化的完整过程。整段都应保留时，start=0、end=\(formatted(candidate.duration))。
         """
@@ -91,7 +94,7 @@ actor QwenVideoAnalyzer {
                 "--mmproj", modelDirectory.appendingPathComponent(projectorFilename).path,
                 "--image", imageArgument,
                 "-p", prompt,
-                "--json-schema", Self.responseSchema,
+                "--json-schema", Self.responseSchema(themes: orderedThemes),
                 "--temp", "0",
                 "-n", "384",
                 "-c", "8192",
@@ -109,7 +112,7 @@ actor QwenVideoAnalyzer {
         if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
             FileHandle.standardError.write(Data("QWEN RAW:\n\(output)\n".utf8))
         }
-        return try parse(output, duration: candidate.duration)
+        return try parse(output, duration: candidate.duration, allowedThemes: orderedThemes)
     }
 
     private func makeFrameFiles(
@@ -234,7 +237,11 @@ actor QwenVideoAnalyzer {
         return String(data: output, encoding: .utf8) ?? ""
     }
 
-    private func parse(_ raw: String, duration: TimeInterval) throws -> DeepAnalysisResult {
+    private func parse(
+        _ raw: String,
+        duration: TimeInterval,
+        allowedThemes: [HighlightTheme]
+    ) throws -> DeepAnalysisResult {
         guard let first = raw.firstIndex(of: "{"),
               let last = raw.lastIndex(of: "}"),
               first <= last
@@ -259,7 +266,10 @@ actor QwenVideoAnalyzer {
             label: sanitizeLabel(response.label),
             reason: response.reason,
             suggestedStart: validRange ? start : nil,
-            suggestedEnd: validRange ? end : nil
+            suggestedEnd: validRange ? end : nil,
+            theme: response.theme
+                .flatMap(HighlightTheme.init(rawValue:))
+                .flatMap { allowedThemes.contains($0) ? $0 : nil }
         )
     }
 
@@ -274,7 +284,17 @@ actor QwenVideoAnalyzer {
         String(format: "%.2f", value)
     }
 
-    private static let responseSchema = """
-    {"type":"object","properties":{"keep":{"type":"boolean"},"highlight_score":{"type":"number"},"quality_score":{"type":"number"},"completeness_score":{"type":"number"},"label":{"type":"string","maxLength":12},"reason":{"type":"string","maxLength":48},"start":{"type":"number"},"end":{"type":"number"}},"required":["keep","highlight_score","quality_score","completeness_score","label","reason","start","end"],"additionalProperties":false}
-    """
+    /// The theme enum is built per run so the model can only answer with a selected content type.
+    static func responseSchema(themes: [HighlightTheme]) -> String {
+        let names = (themes.isEmpty ? HighlightTheme.allCases : themes).map { "\"\($0.rawValue)\"" }
+        return """
+        {"type":"object","properties":{"keep":{"type":"boolean"},"highlight_score":{"type":"number"},\
+        "quality_score":{"type":"number"},"completeness_score":{"type":"number"},\
+        "label":{"type":"string","maxLength":12},"reason":{"type":"string","maxLength":48},\
+        "theme":{"type":"string","enum":[\(names.joined(separator: ","))]},\
+        "start":{"type":"number"},"end":{"type":"number"}},\
+        "required":["keep","highlight_score","quality_score","completeness_score","label","reason","theme","start","end"],\
+        "additionalProperties":false}
+        """
+    }
 }

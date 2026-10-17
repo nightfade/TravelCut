@@ -91,7 +91,7 @@ struct ContentView: View {
                     Label("Qwen3-VL-4B 在本机深度理解候选片段", systemImage: "brain.head.profile")
                     Label("处理期间保持 Mac 唤醒，避免空闲锁屏中断", systemImage: "moon.zzz")
                     Label("保留原始分辨率、方向、帧率、HDR 与现场声", systemImage: "checkmark.shield")
-                    Label("按拍摄时间编号，并在文件名中加入内容标签", systemImage: "text.badge.checkmark")
+                    Label("每天一个文件夹，按拍摄时间编号，文件名带主题和内容标签", systemImage: "text.badge.checkmark")
                 }
                 .font(.callout)
                 .padding(7)

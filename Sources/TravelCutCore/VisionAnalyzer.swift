@@ -71,9 +71,10 @@ final class VisionAnalyzer {
         let faceQuality = results.map(\.faceQuality).max() ?? 0
         let faceBonus = faceCount == 0 ? 0 : min(1, 0.45 + faceQuality * 0.55)
         let labels = Array(Set(results.flatMap(\.labels))).prefix(8)
-        let semanticLabel = results
+        let bestSemantic = results
             .compactMap(\.semantic)
-            .max { $0.score < $1.score }?.label ?? "旅行画面"
+            .max { $0.score < $1.score }
+        let semanticLabel = bestSemantic?.label ?? "旅行画面"
         var score = meanAesthetic * 0.31
             + meanTechnical * 0.24
             + meanSemantic * 0.30
@@ -97,6 +98,7 @@ final class VisionAnalyzer {
             labels: Array(labels),
             semanticScore: meanSemantic,
             semanticLabel: semanticLabel,
+            theme: bestSemantic?.theme,
             featurePrint: representative.featurePrint,
             semanticEmbedding: representative.semantic?.embedding
         )

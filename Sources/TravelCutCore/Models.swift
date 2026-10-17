@@ -187,6 +187,8 @@ public struct DeepAnalysisResult: Codable, Sendable {
     public let reason: String
     public let suggestedStart: TimeInterval?
     public let suggestedEnd: TimeInterval?
+    /// The selected content type the clip fits best; nil in checkpoints from older versions.
+    public let theme: HighlightTheme?
 
     public init(
         keep: Bool,
@@ -196,7 +198,8 @@ public struct DeepAnalysisResult: Codable, Sendable {
         label: String,
         reason: String,
         suggestedStart: TimeInterval? = nil,
-        suggestedEnd: TimeInterval? = nil
+        suggestedEnd: TimeInterval? = nil,
+        theme: HighlightTheme? = nil
     ) {
         self.keep = keep
         self.highlightScore = min(1, max(0, highlightScore))
@@ -206,6 +209,7 @@ public struct DeepAnalysisResult: Codable, Sendable {
         self.reason = reason
         self.suggestedStart = suggestedStart
         self.suggestedEnd = suggestedEnd
+        self.theme = theme
     }
 }
 
@@ -240,6 +244,8 @@ public final class HighlightCandidate: @unchecked Sendable {
     public let labels: [String]
     public let semanticScore: Double
     public let semanticLabel: String
+    /// Content type used to name and sort the exported clip.
+    public let theme: HighlightTheme?
     public let audioScore: Double
     public let audioLabels: [String]
     public let deepAnalysis: DeepAnalysisResult?
@@ -263,6 +269,7 @@ public final class HighlightCandidate: @unchecked Sendable {
         labels: [String],
         semanticScore: Double,
         semanticLabel: String,
+        theme: HighlightTheme? = nil,
         audioScore: Double = 0.5,
         audioLabels: [String] = [],
         deepAnalysis: DeepAnalysisResult? = nil,
@@ -283,6 +290,7 @@ public final class HighlightCandidate: @unchecked Sendable {
         self.labels = labels
         self.semanticScore = semanticScore
         self.semanticLabel = semanticLabel
+        self.theme = theme
         self.audioScore = audioScore
         self.audioLabels = audioLabels
         self.deepAnalysis = deepAnalysis
@@ -314,6 +322,7 @@ public final class HighlightCandidate: @unchecked Sendable {
             labels: labels,
             semanticScore: semanticScore,
             semanticLabel: result.label,
+            theme: result.theme ?? theme,
             audioScore: audioScore,
             audioLabels: audioLabels,
             deepAnalysis: result,
@@ -338,6 +347,7 @@ public final class HighlightCandidate: @unchecked Sendable {
             labels: labels,
             semanticScore: semanticScore,
             semanticLabel: semanticLabel,
+            theme: theme,
             audioScore: audio.score,
             audioLabels: audio.labels,
             deepAnalysis: deepAnalysis,
@@ -357,6 +367,10 @@ struct ExportedClip: Codable, Sendable {
     let score: Double
     let semanticLabel: String
     let reason: String?
+    /// Added in 0.4.0; absent in older checkpoints.
+    let theme: String?
+    let clipStartedAt: Date?
+    let dayFolder: String?
     let width: Int
     let height: Int
     let nominalFrameRate: Double
@@ -401,7 +415,7 @@ public enum TravelCutError: LocalizedError {
         case .cannotCreateExporter: return "无法创建保持原始规格的导出器。"
         case .outputAlreadyExists(let path): return "输出文件已存在：\(path)"
         case .exportFailed(let reason): return "导出失败：\(reason)"
-        case .modelUnavailable(let reason): return "Qwen3-VL 模型不可用：\(reason)"
+        case .modelUnavailable(let reason): return "本地模型不可用：\(reason)"
         case .modelResponseInvalid: return "Qwen3-VL 返回了无法解析的分析结果。"
         case .invalidArguments(let reason): return reason
         case .insufficientOutputSpace(let required, let available):

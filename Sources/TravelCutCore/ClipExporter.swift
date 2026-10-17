@@ -14,7 +14,7 @@ enum ClipExporter {
             withIntermediateDirectories: true
         )
 
-        let digits = max(3, String(candidates.count).count)
+        let placements = ClipOrganizer.plan(candidates)
         var exported: [ExportedClip] = []
         for (index, candidate) in candidates.enumerated() {
             try Task.checkCancellation()
@@ -37,11 +37,13 @@ enum ClipExporter {
                 supported: exporter.supportedFileTypes
             )
             let fileExtension = extensionForFileType(fileType)
+            let placement = placements[index]
+            let dayFolder = configuration.outputFolder
+                .appendingPathComponent(placement.dayFolder, isDirectory: true)
+            try manager.createDirectory(at: dayFolder, withIntermediateDirectories: true)
             let outputURL = uniqueOutputURL(
-                folder: configuration.outputFolder,
-                index: index + 1,
-                digits: digits,
-                candidate: candidate,
+                folder: dayFolder,
+                baseName: placement.baseName,
                 fileExtension: fileExtension
             )
             if manager.fileExists(atPath: outputURL.path) {
@@ -54,9 +56,12 @@ enum ClipExporter {
             exporter.outputURL = outputURL
             exporter.outputFileType = fileType
             exporter.shouldOptimizeForNetworkUse = false
+            // The moment the clip starts, so editors that sort by date keep shooting order
+            // even for several clips cut from one long source.
             exporter.metadata = metadataWithCreationDate(
                 metadata,
-                creationDate: candidate.source.createdAt
+                creationDate: placement.clipStartedAt,
+                timeZone: placement.timeZone
             )
             exporter.timeRange = CMTimeRange(
                 start: CMTime(seconds: safeStart, preferredTimescale: 60_000),
@@ -75,7 +80,7 @@ enum ClipExporter {
             }
 
             try? manager.setAttributes([
-                .creationDate: candidate.source.createdAt,
+                .creationDate: placement.clipStartedAt,
                 .modificationDate: candidate.source.modifiedAt,
             ], ofItemAtPath: outputURL.path)
 
@@ -89,6 +94,9 @@ enum ClipExporter {
                 score: rounded(candidate.score),
                 semanticLabel: candidate.semanticLabel,
                 reason: candidate.deepAnalysis?.reason,
+                theme: candidate.theme?.rawValue,
+                clipStartedAt: placement.clipStartedAt,
+                dayFolder: placement.dayFolder,
                 width: candidate.source.width,
                 height: candidate.source.height,
                 nominalFrameRate: rounded(candidate.source.nominalFrameRate),
@@ -121,7 +129,8 @@ enum ClipExporter {
 
     private static func metadataWithCreationDate(
         _ metadata: [AVMetadataItem],
-        creationDate: Date
+        creationDate: Date,
+        timeZone: TimeZone
     ) -> [AVMetadataItem] {
         let creationIdentifiers: Set<AVMetadataIdentifier> = [
             .commonIdentifierCreationDate,
@@ -132,7 +141,11 @@ enum ClipExporter {
             guard let identifier = $0.identifier else { return true }
             return !creationIdentifiers.contains(identifier)
         }
-        let value = ISO8601DateFormatter().string(from: creationDate)
+        // Keep the capture offset (2026-07-17T23:58:00+01:00) so the clip still sorts into
+        // the right day when re-imported, instead of collapsing to UTC.
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = timeZone
+        let value = formatter.string(from: creationDate)
         let creationItems = creationIdentifiers.map { identifier -> AVMetadataItem in
             let item = AVMutableMetadataItem()
             item.identifier = identifier
@@ -153,27 +166,9 @@ enum ClipExporter {
 
     private static func uniqueOutputURL(
         folder: URL,
-        index: Int,
-        digits: Int,
-        candidate: HighlightCandidate,
+        baseName: String,
         fileExtension: String
     ) -> URL {
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
-        let number = String(format: "%0*d", digits, index)
-        let date = dateFormatter.string(from: candidate.source.createdAt)
-        let sourceName = sanitizedFilename(
-            candidate.source.url.deletingPathExtension().lastPathComponent,
-            maximumUTF8Bytes: 96,
-            fallback: "原视频"
-        )
-        let label = sanitizedFilename(
-            candidate.semanticLabel,
-            maximumUTF8Bytes: 48,
-            fallback: "旅行高光"
-        )
-        let baseName = "\(number)_\(date)_\(sourceName)_\(label)"
         let manager = FileManager.default
         var url = folder.appendingPathComponent(baseName).appendingPathExtension(fileExtension)
         var suffix = 2
@@ -183,24 +178,6 @@ enum ClipExporter {
             suffix += 1
         }
         return url
-    }
-
-    private static func sanitizedFilename(
-        _ value: String,
-        maximumUTF8Bytes: Int,
-        fallback: String
-    ) -> String {
-        let forbidden = CharacterSet(charactersIn: "/\\:?%*|\"<>\n\r\t")
-        let clean = value.components(separatedBy: forbidden).joined(separator: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = clean.isEmpty ? fallback : clean
-        var result = ""
-        for character in source {
-            let next = result + String(character)
-            if next.utf8.count > maximumUTF8Bytes { break }
-            result = next
-        }
-        return result.isEmpty ? fallback : result
     }
 
     private static func rounded(_ value: Double) -> Double {

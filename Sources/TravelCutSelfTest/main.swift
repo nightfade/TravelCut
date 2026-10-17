@@ -47,6 +47,18 @@ struct TravelCutSelfTest {
         )
 
         failures.append(contentsOf: TravelCutDiagnostics.recoverySelfTest())
+        failures.append(contentsOf: TravelCutDiagnostics.organizationSelfTest())
+        if let sample = ProcessInfo.processInfo.environment["TRAVELCUT_EXPORT_SAMPLE"] {
+            // Optional: a real AVFoundation export, only when a sample clip is supplied.
+            let semaphore = DispatchSemaphore(value: 0)
+            let box = FailureBox()
+            Task.detached {
+                box.failures = await TravelCutDiagnostics.exportSelfTest(sample: URL(fileURLWithPath: sample))
+                semaphore.signal()
+            }
+            semaphore.wait()
+            failures.append(contentsOf: box.failures)
+        }
 
         if failures.isEmpty {
             print("All TravelCut self-tests passed.")
@@ -63,4 +75,8 @@ struct TravelCutSelfTest {
     private static func check(_ condition: Bool, _ message: String, failures: inout [String]) {
         if !condition { failures.append(message) }
     }
+}
+
+private final class FailureBox: @unchecked Sendable {
+    var failures: [String] = []
 }

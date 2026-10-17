@@ -31,6 +31,7 @@ struct SavedCandidate: Codable, Sendable {
     let duration: TimeInterval
     let score: Double
     let semanticLabel: String
+    let theme: HighlightTheme?
     let audioLabels: [String]
     let deepAnalysis: DeepAnalysisResult?
 
@@ -41,6 +42,7 @@ struct SavedCandidate: Codable, Sendable {
         duration = candidate.duration
         score = candidate.score
         semanticLabel = candidate.semanticLabel
+        theme = candidate.theme
         audioLabels = candidate.audioLabels
         deepAnalysis = candidate.deepAnalysis
     }
@@ -61,6 +63,7 @@ struct SavedCandidate: Codable, Sendable {
             labels: [],
             semanticScore: 0.5,
             semanticLabel: semanticLabel,
+            theme: theme,
             audioScore: 0.5,
             audioLabels: audioLabels,
             deepAnalysis: deepAnalysis,

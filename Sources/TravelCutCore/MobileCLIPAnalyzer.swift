@@ -5,6 +5,8 @@ import CoreML
 struct SemanticAnalysis {
     let score: Double
     let label: String
+    /// Best matching selected content type, even when a rejection prompt scored higher.
+    let theme: HighlightTheme?
     let embedding: [Float]
 }
 
@@ -74,7 +76,12 @@ final class MobileCLIPAnalyzer {
         let label = positiveScore >= negativeScore
             ? (bestPositive?.0.label ?? "旅行画面")
             : (bestNegative?.0.label ?? "低价值画面")
-        return SemanticAnalysis(score: semanticScore, label: label, embedding: imageEmbedding)
+        return SemanticAnalysis(
+            score: semanticScore,
+            label: label,
+            theme: bestPositive.flatMap { HighlightTheme(rawValue: $0.0.label) },
+            embedding: imageEmbedding
+        )
     }
 
     private func makePixelBuffer(_ image: CGImage) throws -> CVPixelBuffer {
