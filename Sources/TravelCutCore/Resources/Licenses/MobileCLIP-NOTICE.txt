@@ -1,0 +1,13 @@
+MobileCLIP-S2 (Core ML)
+
+Copyright (C) 2024 Apple Inc.
+Model weights are licensed under the Apple Machine Learning Research Model
+License (see MobileCLIP-MODEL-LICENSE.txt). They are not distributed with
+TravelCut.
+
+TravelCut downloads the following official files from Apple on first use:
+- mobileclip_s2_image.mlpackage
+- mobileclip_s2_text.mlpackage
+
+Repository: https://huggingface.co/apple/coreml-mobileclip
+Pinned revision: 3e0a7bfb9fe83da8a3efaa3fd8f7df24214bb947

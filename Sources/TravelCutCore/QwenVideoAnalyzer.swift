@@ -1,0 +1,280 @@
+import AVFoundation
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+
+actor QwenVideoAnalyzer {
+    static let modelName = "Qwen3-VL-4B-Instruct Q4_K_M"
+
+    private struct Response: Decodable {
+        let keep: Bool
+        let highlightScore: Double
+        let qualityScore: Double
+        let completenessScore: Double
+        let label: String
+        let reason: String
+        let start: Double?
+        let end: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case keep
+            case highlightScore = "highlight_score"
+            case qualityScore = "quality_score"
+            case completenessScore = "completeness_score"
+            case label
+            case reason
+            case start
+            case end
+        }
+    }
+
+    private let modelFilename = "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
+    private let projectorFilename = "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"
+    private var modelDirectory: URL?
+
+    func load(progress: @Sendable @escaping (Double) -> Void) async throws {
+        if modelDirectory != nil {
+            progress(1)
+            return
+        }
+        modelDirectory = try await ModelInstaller(ModelInstaller.qwen).install(progress: progress)
+        _ = try runtimeExecutable()
+    }
+
+    func analyze(
+        candidate: HighlightCandidate,
+        frameCount: Int,
+        selectedThemes: Set<HighlightTheme>
+    ) async throws -> DeepAnalysisResult {
+        guard let modelDirectory else {
+            throw TravelCutError.modelUnavailable("模型尚未安装")
+        }
+        let temporaryFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TravelCut-Qwen-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryFolder) }
+
+        let frames = try makeFrameFiles(
+            for: candidate,
+            count: frameCount,
+            folder: temporaryFolder
+        )
+        guard !frames.isEmpty else {
+            throw TravelCutError.invalidArguments("无法读取候选片段的分析帧")
+        }
+
+        let timestamps = frames.enumerated().map { index, frame in
+            "第\(index + 1)帧=\(formatted(frame.time))秒"
+        }.joined(separator: "，")
+        let themeGuidance = HighlightTheme.allCases
+            .filter(selectedThemes.contains)
+            .map(\.qwenGuidance)
+            .joined(separator: "；")
+        let prompt = """
+        你是旅行视频高光剪辑师。以下图片按时间顺序取自同一候选视频，候选长度为 \(formatted(candidate.duration)) 秒。
+        时间对应关系：\(timestamps)。同期现场声分类：\(candidate.audioLabels.isEmpty ? "没有可靠结果" : candidate.audioLabels.joined(separator: ", "))。
+        用户主动选择了以下想保留的内容：\(themeGuidance)。只把与至少一种已选内容明显相关的片段作为候选高光。
+        判断它是否值得作为独立片段交给剪映模板。重视旅途记录价值、事件或景观变化、情绪、动作完整性、画面质量和镜头稳定性。
+        对清晰稳定且符合已选内容的片段应倾向保留，不要求罕见或戏剧化；尤其不得仅因沿途风景常见而拒绝它。
+        明显误拍、遮挡、严重失焦、无有效内容或与已选内容无关时拒绝。起止时间围绕自然事件，不要求固定长度。
+        label 必须是2到8个汉字，reason 必须使用中文且不超过30个汉字。
+        只输出 JSON。分数范围 0 到 1。start 和 end 是相对此候选片段的秒数；去掉举机、收机、明显晃动和事件结束后的空白，
+        但保留动作、对话或景观变化的完整过程。整段都应保留时，start=0、end=\(formatted(candidate.duration))。
+        """
+        let imageArgument = frames.map(\.url.path).joined(separator: ",")
+        let executable = try runtimeExecutable()
+        let output = try await run(
+            executable: executable,
+            workingDirectory: executable.deletingLastPathComponent(),
+            arguments: [
+                "-m", modelDirectory.appendingPathComponent(modelFilename).path,
+                "--mmproj", modelDirectory.appendingPathComponent(projectorFilename).path,
+                "--image", imageArgument,
+                "-p", prompt,
+                "--json-schema", Self.responseSchema,
+                "--temp", "0",
+                "-n", "384",
+                "-c", "8192",
+                "--cache-type-k", "q8_0",
+                "--cache-type-v", "q8_0",
+                "--image-max-tokens", "384",
+                "--gpu-layers", "all",
+                "--fit", "on",
+                "--fit-target", "2048",
+                "--no-warmup",
+                "--no-perf",
+                "--log-verbosity", "1",
+            ]
+        )
+        if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
+            FileHandle.standardError.write(Data("QWEN RAW:\n\(output)\n".utf8))
+        }
+        return try parse(output, duration: candidate.duration)
+    }
+
+    private func makeFrameFiles(
+        for candidate: HighlightCandidate,
+        count requestedCount: Int,
+        folder: URL
+    ) throws -> [(url: URL, time: TimeInterval)] {
+        let count = max(2, min(16, requestedCount))
+        let asset = AVURLAsset(url: candidate.source.url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 640, height: 640)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.15, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.15, preferredTimescale: 600)
+
+        var frames: [(URL, TimeInterval)] = []
+        for index in 0..<count {
+            let ratio = count == 1 ? 0.5 : Double(index) / Double(count - 1)
+            let relativeTime = min(
+                max(0, candidate.duration - 0.05),
+                max(0, 0.05 + (candidate.duration - 0.10) * ratio)
+            )
+            var actualTime = CMTime.zero
+            guard let image = try? generator.copyCGImage(
+                at: CMTime(
+                    seconds: candidate.start + relativeTime,
+                    preferredTimescale: 600
+                ),
+                actualTime: &actualTime
+            ) else {
+                continue
+            }
+            let url = folder.appendingPathComponent(
+                String(format: "frame-%02d-%06.2fs.jpg", index + 1, relativeTime)
+            )
+            guard let destination = CGImageDestinationCreateWithURL(
+                url as CFURL,
+                UTType.jpeg.identifier as CFString,
+                1,
+                nil
+            ) else {
+                continue
+            }
+            CGImageDestinationAddImage(
+                destination,
+                image,
+                [kCGImageDestinationLossyCompressionQuality: 0.86] as CFDictionary
+            )
+            if CGImageDestinationFinalize(destination) {
+                frames.append((url, relativeTime))
+            }
+        }
+        return frames
+    }
+
+    private func runtimeExecutable() throws -> URL {
+        let manager = FileManager.default
+        var directories: [URL] = []
+        if let override = ProcessInfo.processInfo.environment["TRAVELCUT_LLAMA_DIR"] {
+            directories.append(URL(fileURLWithPath: override, isDirectory: true))
+        }
+        directories.append(
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/llama", isDirectory: true)
+        )
+        directories.append(
+            URL(fileURLWithPath: CommandLine.arguments[0])
+                .deletingLastPathComponent()
+                .appendingPathComponent("llama", isDirectory: true)
+        )
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        directories.append(sourceRoot.appendingPathComponent("Resources/llama", isDirectory: true))
+
+        for directory in directories {
+            let executable = directory.appendingPathComponent("llama-mtmd-cli")
+            if manager.isExecutableFile(atPath: executable.path) { return executable }
+        }
+        throw TravelCutError.modelUnavailable("应用中缺少 llama.cpp 推理组件")
+    }
+
+    private func run(
+        executable: URL,
+        workingDirectory: URL,
+        arguments: [String]
+    ) async throws -> String {
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.executableURL = executable
+        process.currentDirectoryURL = workingDirectory
+        process.arguments = arguments
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        let status: Int32 = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                process.terminationHandler = { finished in
+                    continuation.resume(returning: finished.terminationStatus)
+                }
+                do {
+                    try process.run()
+                } catch {
+                    process.terminationHandler = nil
+                    continuation.resume(throwing: error)
+                }
+            }
+        } onCancel: {
+            process.terminate()
+        }
+        try Task.checkCancellation()
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let errors = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        guard status == 0 else {
+            let message = String(data: errors, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw TravelCutError.modelUnavailable(
+                message?.isEmpty == false ? message! : "本地推理失败"
+            )
+        }
+        return String(data: output, encoding: .utf8) ?? ""
+    }
+
+    private func parse(_ raw: String, duration: TimeInterval) throws -> DeepAnalysisResult {
+        guard let first = raw.firstIndex(of: "{"),
+              let last = raw.lastIndex(of: "}"),
+              first <= last
+        else {
+            throw TravelCutError.modelResponseInvalid
+        }
+        let json = String(raw[first...last])
+        guard let data = json.data(using: .utf8),
+              let response = try? JSONDecoder().decode(Response.self, from: data)
+        else {
+            throw TravelCutError.modelResponseInvalid
+        }
+
+        let start = response.start.map { min(duration, max(0, $0)) }
+        let end = response.end.map { min(duration, max(0, $0)) }
+        let validRange = start != nil && end != nil && end! - start! >= 0.1
+        return DeepAnalysisResult(
+            keep: response.keep,
+            highlightScore: response.highlightScore,
+            qualityScore: response.qualityScore,
+            completenessScore: response.completenessScore,
+            label: sanitizeLabel(response.label),
+            reason: response.reason,
+            suggestedStart: validRange ? start : nil,
+            suggestedEnd: validRange ? end : nil
+        )
+    }
+
+    private func sanitizeLabel(_ value: String) -> String {
+        let forbidden = CharacterSet(charactersIn: "/\\:?%*|\"<>\n\r\t")
+        let cleaned = value.components(separatedBy: forbidden).joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String((cleaned.isEmpty ? "旅行高光" : cleaned).prefix(24))
+    }
+
+    private func formatted(_ value: Double) -> String {
+        String(format: "%.2f", value)
+    }
+
+    private static let responseSchema = """
+    {"type":"object","properties":{"keep":{"type":"boolean"},"highlight_score":{"type":"number"},"quality_score":{"type":"number"},"completeness_score":{"type":"number"},"label":{"type":"string","maxLength":12},"reason":{"type":"string","maxLength":48},"start":{"type":"number"},"end":{"type":"number"}},"required":["keep","highlight_score","quality_score","completeness_score","label","reason","start","end"],"additionalProperties":false}
+    """
+}
