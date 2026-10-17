@@ -38,7 +38,8 @@ final class MobileCLIPAnalyzer {
         let definitions: [(String, String, Bool)] = selectedDefinitions + [
             ("误拍废片", "an accidental blurry unusable video frame", false),
             ("遮挡镜头", "the camera lens is blocked by a hand, bag, or pocket", false),
-            ("空白画面", "a boring empty wall, floor, ceiling, or dark frame", false),
+            // Not "dark frame": night skies and aurora are dark but worth keeping.
+            ("空白画面", "a boring empty wall, floor or ceiling, or a completely black frame with nothing visible", false),
             ("屏幕文件", "a screenshot, document, chart, or computer screen", false),
         ]
 

@@ -23,17 +23,17 @@ public enum HighlightTheme: String, CaseIterable, Codable, Hashable, Identifiabl
         case .roadScenery:
             return "memorable scenery filmed along a road or through a train car boat window during a journey"
         case .nature:
-            return "a beautiful travel landscape with mountains beach ocean lake forest waterfall sunset or sunrise"
+            return "a beautiful travel landscape with mountains beach ocean lake forest waterfall snow sunset sunrise aurora northern lights or a starry night sky"
         case .cityStreet:
-            return "an interesting city street neighborhood market or everyday street scene while traveling"
+            return "an interesting city street neighborhood market or everyday street scene while traveling, by day or at night with festive lights"
         case .landmark:
-            return "an impressive travel landmark historic site temple museum or beautiful architecture"
+            return "an impressive travel landmark historic site temple church interior museum or beautiful architecture"
         case .people:
             return "friends or family enjoying a vacation together with candid emotion conversation or interaction"
         case .food:
             return "local food restaurant cafe market meal or cooking experience during a trip"
         case .cultureActivity:
-            return "a cultural performance festival museum visit ride sport or memorable travel activity"
+            return "a cultural performance festival light show ride sport or memorable travel activity"
         case .animals:
             return "wildlife pets or animals encountered during a journey"
         }
@@ -44,17 +44,17 @@ public enum HighlightTheme: String, CaseIterable, Codable, Hashable, Identifiabl
         case .roadScenery:
             return "沿途风景：公路、步行途中、车窗、火车、船上看到的景色和旅途氛围；只要清晰稳定并能记录路线，即使常见也有保留价值"
         case .nature:
-            return "自然景观：山川、海岸、湖泊、森林、瀑布、雪景、日出日落等"
+            return "自然景观：山川、海岸、湖泊、森林、瀑布、雪景雪原、日出日落、极光、星空和夜空等"
         case .cityStreet:
-            return "城市街景：街道、社区、市场、店铺和当地日常生活环境"
+            return "城市街景：街道、社区、市场、店铺和当地日常生活环境，包括夜晚的街景、节日灯饰和城市灯光"
         case .landmark:
-            return "地标建筑：名胜、历史遗迹、建筑、寺庙、博物馆和观景地"
+            return "地标建筑：名胜、历史遗迹、建筑及其内部、教堂、寺庙、博物馆和观景地"
         case .people:
             return "人物互动：同行者的表情、对话、动作、合影过程和真实情绪"
         case .food:
             return "当地美食：餐厅、咖啡馆、市场、菜品和制作过程"
         case .cultureActivity:
-            return "活动人文：表演、节庆、展览、游乐、运动和当地文化体验"
+            return "活动人文：表演、节庆、灯光秀、游乐、运动和当地文化体验"
         case .animals:
             return "动物：旅途中遇到的野生动物、牧场动物和宠物互动"
         }
