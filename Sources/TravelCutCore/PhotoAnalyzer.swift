@@ -133,6 +133,7 @@ struct PhotoMetrics: Sendable {
     let featurePrint: VNFeaturePrintObservation?
     let previewSize: Int           // longest side of the image that was analysed
     let embedding: [Float]?        // MobileCLIP image embedding, exported for taste experiments
+    let visionFailed: Bool         // a Vision request failed; aesthetics, faces or grouping fell back to defaults
 
     /// How good this frame is technically, for choosing within a group. Faces dominate when present.
     var pickScore: Double {
@@ -169,6 +170,7 @@ final class PhotoAnalyzer {
     var hasSemanticModel: Bool { vision.fastModelName != nil }
 
     func analyze(_ image: CGImage) -> PhotoMetrics {
+        let failuresBefore = vision.failureCount
         let frame = vision.analyzeFrame(image)
         let face = largestFace(in: image)
         let faceSharpness = face.flatMap { box -> Double? in
@@ -187,7 +189,8 @@ final class PhotoAnalyzer {
             theme: frame.semantic?.theme,
             featurePrint: frame.featurePrint,
             previewSize: max(image.width, image.height),
-            embedding: frame.semantic?.embedding
+            embedding: frame.semantic?.embedding,
+            visionFailed: vision.failureCount > failuresBefore
         )
     }
 

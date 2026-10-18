@@ -156,7 +156,8 @@ actor QwenVideoAnalyzer {
                 "--no-warmup",
                 "--no-perf",
                 "--log-verbosity", "1",
-            ]
+            ],
+            timeout: 180
         )
         if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
             FileHandle.standardError.write(Data("QWEN PHOTO RAW:\n\(output)\n".utf8))
@@ -284,7 +285,8 @@ actor QwenVideoAnalyzer {
     private func run(
         executable: URL,
         workingDirectory: URL,
-        arguments: [String]
+        arguments: [String],
+        timeout: TimeInterval? = nil
     ) async throws -> String {
         let process = Process()
         let outputPipe = Pipe()
@@ -302,6 +304,12 @@ actor QwenVideoAnalyzer {
                 }
                 do {
                     try process.run()
+                    if let timeout {
+                        // A stuck inference (e.g. under memory pressure) must not stall the whole batch.
+                        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                            if process.isRunning { process.terminate() }
+                        }
+                    }
                 } catch {
                     process.terminationHandler = nil
                     continuation.resume(throwing: error)

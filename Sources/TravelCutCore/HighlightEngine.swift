@@ -62,7 +62,7 @@ public final class HighlightEngine: @unchecked Sendable {
         for (index, plan) in plans.enumerated() {
             try Task.checkCancellation()
             let source = sources[plan.sourceIndex]
-            if let candidate = try? fastAnalyzer.analyze(plan: plan, source: source) {
+            if let candidate = autoreleasepool(invoking: { try? fastAnalyzer.analyze(plan: plan, source: source) }) {
                 fastCandidates.append(candidate)
                 if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
                     let detail = String(

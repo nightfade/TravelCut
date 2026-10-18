@@ -29,6 +29,8 @@ public struct PhotoCullSummary: Sendable {
     public let starredCount: Int          // 2 stars or more
     public let rejectedCount: Int
     public let skippedUserMarked: Int     // already rated or labelled by the user
+    public let visionFailures: Int        // photos analysed with fallbacks because Vision failed
+    public let qwenFailures: Int          // groups Qwen could not judge (error or 3-minute timeout)
     public let notWritable: Int           // formats that hold no metadata Bridge reads (e.g. PNG), or exiftool missing
     public let exiftoolMissing: Bool
     public let wroteRatings: Bool
@@ -66,7 +68,9 @@ public final class PhotoCullEngine: @unchecked Sendable {
         metrics.reserveCapacity(items.count)
         for (index, item) in items.enumerated() {
             try Task.checkCancellation()
-            metrics.append(PhotoDiscovery.preview(of: item.primary).map(analyzer.analyze))
+            // Drain autoreleased image buffers every photo. Without this, a 9,000-photo run exhausted
+            // IOSurface memory after about 5,000 photos and every later Vision request failed silently.
+            metrics.append(autoreleasepool { PhotoDiscovery.preview(of: item.primary).map(analyzer.analyze) })
             if index % 10 == 0 || index == items.count - 1 {
                 progress(ProgressUpdate(
                     fraction: 0.03 + 0.45 * Double(index + 1) / Double(items.count),
@@ -95,6 +99,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
         }
 
         var judgements = [PhotoGroupJudgement?](repeating: nil, count: groups.count)
+        var qwenFailures = 0
         if configuration.useQwen {
             let qwen = QwenVideoAnalyzer()
             progress(ProgressUpdate(fraction: 0.50, message: "正在准备 Qwen3-VL-4B 本地模型…"))
@@ -113,6 +118,11 @@ public final class PhotoCullEngine: @unchecked Sendable {
             var lastError: Error?
             for (groupIndex, members) in groups.enumerated() {
                 try Task.checkCancellation()
+                // Announce the group before the model runs, so a slow first group does not look stuck.
+                progress(ProgressUpdate(
+                    fraction: 0.54 + 0.42 * Double(groupIndex) / Double(groups.count),
+                    message: "Qwen 正在挑选第 \(groupIndex + 1)/\(groups.count) 组…"
+                ))
                 // Up to four of the technically best usable frames, best first: if the model leans
                 // towards the first image, it leans towards the technical pick.
                 let candidates = Array(members.indices
@@ -123,10 +133,11 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     var files: [URL] = []
                     for (position, member) in candidates.enumerated() {
                         let url = temporary.appendingPathComponent("g\(groupIndex)-\(position + 1).jpg")
-                        if let image = PhotoDiscovery.preview(of: items[members[member]].primary),
-                           PhotoDiscovery.writeJPEG(image, to: url) {
-                            files.append(url)
+                        let written = autoreleasepool {
+                            PhotoDiscovery.preview(of: items[members[member]].primary)
+                                .map { PhotoDiscovery.writeJPEG($0, to: url) } ?? false
                         }
+                        if written { files.append(url) }
                     }
                     if files.count == candidates.count {
                         do {
@@ -148,12 +159,9 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     }
                     files.forEach { try? FileManager.default.removeItem(at: $0) }
                 }
-                progress(ProgressUpdate(
-                    fraction: 0.54 + 0.42 * Double(groupIndex + 1) / Double(groups.count),
-                    message: "Qwen 正在挑选 \(groupIndex + 1)/\(groups.count) 组…"
-                ))
             }
             if failures == groups.count, let lastError { throw lastError }
+            qwenFailures = failures
         }
 
         progress(ProgressUpdate(
@@ -193,10 +201,12 @@ public final class PhotoCullEngine: @unchecked Sendable {
                         if written == .skippedUserMarks { skipped += 1 }
                     }
                 } else if let file = item.embeddedTarget {
-                    if exiftool == nil {
+                    if !configuration.writeRatings {
+                        outcome = "试运行"
+                    } else if exiftool == nil {
                         outcome = "跳过：写入 JPEG 需要 exiftool"
                         notWritable += 1
-                    } else if configuration.writeRatings {
+                    } else {
                         embeddedJobs.append(EmbeddedMetadataWriter.Job(file: file, fields: fields))
                         outcome = "待写入"
                     }
@@ -218,7 +228,8 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     aesthetic: m.map { ($0.aesthetic * 1000).rounded() / 1000 },
                     utility: m?.isUtility,
                     clipLabel: m?.semanticLabel,
-                    previewSize: m?.previewSize
+                    previewSize: m?.previewSize,
+                    visionFailed: m?.visionFailed
                 ))
             }
             report.append(PhotoCullReport.Group(
@@ -282,7 +293,9 @@ public final class PhotoCullEngine: @unchecked Sendable {
         return PhotoCullSummary(
             reportFile: reportURL, photoCount: items.count, groupCount: groups.count,
             starredCount: starred, rejectedCount: rejected, skippedUserMarked: skipped,
-            notWritable: notWritable, exiftoolMissing: exiftool == nil,
+            visionFailures: metrics.filter { $0?.visionFailed ?? false }.count,
+            qwenFailures: qwenFailures,
+            notWritable: notWritable, exiftoolMissing: exiftool == nil && configuration.writeRatings,
             wroteRatings: configuration.writeRatings, featuresFile: featuresURL
         )
     }
@@ -307,6 +320,7 @@ struct PhotoCullReport: Codable {
         let utility: Bool?
         let clipLabel: String?
         let previewSize: Int?
+        let visionFailed: Bool?
     }
 
     struct Group: Codable {

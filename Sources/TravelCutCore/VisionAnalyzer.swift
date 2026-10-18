@@ -20,6 +20,8 @@ final class VisionAnalyzer {
 
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
     private let semanticAnalyzer: MobileCLIPAnalyzer?
+    /// Vision requests that failed even after the CPU retry. Callers compare before and after a frame.
+    private(set) var failureCount = 0
 
     init(selectedThemes: Set<HighlightTheme>) {
         semanticAnalyzer = try? MobileCLIPAnalyzer(selectedThemes: selectedThemes)
@@ -231,6 +233,7 @@ final class VisionAnalyzer {
         } catch {
             for request in requests { request.usesCPUOnly = true }
             if (try? handler.perform(requests)) != nil { return }
+            failureCount += 1
             if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
                 FileHandle.standardError.write(Data("Vision \(name) unavailable: \(error.localizedDescription)\n".utf8))
             }

@@ -128,6 +128,8 @@ struct TravelCutCLI {
             }
             print("完成：\(summary.photoCount) 张照片，分成 \(summary.groupCount) 组")
             print("2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张")
+            if summary.qwenFailures > 0 { print("Qwen 没能判断 \(summary.qwenFailures) 组（出错或超过 3 分钟），这些组按技术分挑选") }
+            if summary.visionFailures > 0 { print("警告：\(summary.visionFailures) 张照片的画面分析失败，用了默认值，结果不可靠") }
             if summary.skippedUserMarked > 0 { print("已有你的星级或标签而跳过：\(summary.skippedUserMarked) 张") }
             if summary.notWritable > 0 { print("未写入：\(summary.notWritable) 张（格式不支持，或写入 JPEG 需要先安装 exiftool）") }
             print(summary.wroteRatings ? "星级已写入：RAW 写进旁边的 .xmp，JPEG 写进文件元数据" : "试运行：没有写入任何星级")

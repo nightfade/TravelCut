@@ -306,6 +306,8 @@ final class AppModel: ObservableObject {
                 lastOutputFolder = inputFolder
                 var lines = ["完成：\(summary.photoCount) 张照片分成 \(summary.groupCount) 组，2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张"]
                 if summary.skippedUserMarked > 0 { lines.append("已有你的星级或标签而跳过 \(summary.skippedUserMarked) 张") }
+                if summary.qwenFailures > 0 { lines.append("Qwen 没能判断 \(summary.qwenFailures) 组，这些组按技术分挑选") }
+                if summary.visionFailures > 0 { lines.append("警告：\(summary.visionFailures) 张照片的画面分析失败，结果不可靠") }
                 if summary.exiftoolMissing { lines.append("写入 JPEG 需要 exiftool：brew install exiftool") }
                 if summary.notWritable > 0 { lines.append("未写入 \(summary.notWritable) 张") }
                 lines.append(summary.wroteRatings
