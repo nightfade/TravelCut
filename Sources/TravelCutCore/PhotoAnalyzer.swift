@@ -9,6 +9,12 @@ import Vision
 struct PhotoItem: Sendable {
     let primary: URL          // the file whose preview is analysed
     let sidecarTarget: URL?   // RAW file that owns the .xmp sidecar; nil when there is no RAW
+    /// JPEG / HEIC / TIFF / DNG without a RAW: Bridge reads metadata inside these files, so ratings
+    /// are written into the file itself (metadata only, pixels untouched).
+    var embeddedTarget: URL? {
+        sidecarTarget == nil && PhotoDiscovery.embeddedExtensions.contains(primary.pathExtension.lowercased())
+            ? primary : nil
+    }
     let capturedAt: Date
     let timeZone: TimeZone
 }
@@ -18,6 +24,7 @@ enum PhotoDiscovery {
         "arw", "cr2", "cr3", "nef", "nrw", "orf", "raf", "rw2", "pef", "srw", "3fr", "iiq", "rwl", "x3f",
     ]
     static let renderedExtensions: Set<String> = ["jpg", "jpeg", "heic", "heif", "hif", "png", "tif", "tiff", "dng"]
+    static let embeddedExtensions: Set<String> = ["jpg", "jpeg", "heic", "heif", "hif", "tif", "tiff", "dng"]
 
     static func discover(in folder: URL) throws -> [PhotoItem] {
         let manager = FileManager.default
@@ -115,7 +122,7 @@ enum PhotoDiscovery {
 /// Per-photo measurements used to group shots and pick the best of each group.
 struct PhotoMetrics: Sendable {
     let aesthetic: Double
-    let sharpness: Double          // whole frame
+    let sharpness: Double          // sharpest region of the frame, so shallow depth of field is not "soft"
     let faceSharpness: Double?     // largest face, when there is a usable one
     let faceQuality: Double
     let eyesClosed: Bool           // largest face looks like a blink
@@ -125,6 +132,7 @@ struct PhotoMetrics: Sendable {
     let theme: HighlightTheme?
     let featurePrint: VNFeaturePrintObservation?
     let previewSize: Int           // longest side of the image that was analysed
+    let embedding: [Float]?        // MobileCLIP image embedding, exported for taste experiments
 
     /// How good this frame is technically, for choosing within a group. Faces dominate when present.
     var pickScore: Double {
@@ -136,18 +144,15 @@ struct PhotoMetrics: Sendable {
         return 0.55 * sharpness + 0.30 * aesthetic + 0.15 * exposure
     }
 
-    /// Why the frame is clearly unusable, or nil. Lenient on purpose: Qwen and the user decide the rest.
-    /// MobileCLIP's rejection prompts alone are not enough, because everyday photos that match none of
-    /// the travel themes often score highest on "accidental frame"; they count only when the frame is
-    /// also soft.
+    /// Why the frame is clearly unusable, or nil. Only black, white and badly out-of-focus frames:
+    /// on a 9,000-photo trip, MobileCLIP's rejection prompts and Vision's "utility" flag rejected
+    /// dozens of shallow-depth-of-field portraits the user later edited, so neither counts any more.
+    static let blurThreshold = 0.06
+
     var junkReason: String? {
-        let rejected: Set<String> = ["误拍废片", "遮挡镜头", "空白画面", "屏幕文件"]
-        let soft = sharpness < 0.08 && (faceSharpness ?? 0) < 0.08
         if brightness < 0.015 { return "全黑" }
         if brightness > 0.985 { return "全白" }
-        if soft { return "模糊" }
-        if isUtility, sharpness < 0.2 { return "无内容画面" }
-        if let label = semanticLabel, rejected.contains(label), sharpness < 0.2 { return label }
+        if sharpness < Self.blurThreshold && (faceSharpness ?? 0) < 0.08 { return "模糊" }
         return nil
     }
 
@@ -172,7 +177,7 @@ final class PhotoAnalyzer {
         }
         return PhotoMetrics(
             aesthetic: frame.aesthetic,
-            sharpness: vision.edgeSharpness(of: image),
+            sharpness: Self.localSharpness(of: image),
             faceSharpness: faceSharpness,
             faceQuality: frame.faceQuality,
             eyesClosed: face.map { _ in eyesClosedInLargestFace(image) } ?? false,
@@ -181,8 +186,38 @@ final class PhotoAnalyzer {
             semanticLabel: frame.semantic?.label,
             theme: frame.semantic?.theme,
             featurePrint: frame.featurePrint,
-            previewSize: max(image.width, image.height)
+            previewSize: max(image.width, image.height),
+            embedding: frame.semantic?.embedding
         )
+    }
+
+    /// Laplacian energy of the sharpest of 6×6 tiles at 384 px, scaled so a sharp photo is about
+    /// 0.3–1 and a badly blurred one under 0.05 (calibrated on travel photos with Gaussian blur).
+    static func localSharpness(of image: CGImage) -> Double {
+        let width = 384
+        let height = max(3, Int(Double(image.height) / Double(max(1, image.width)) * Double(width)))
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        guard let context = CGContext(
+            data: &pixels, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else { return 0.5 }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let tiles = 6
+        var sums = [Double](repeating: 0, count: tiles * tiles)
+        var counts = [Int](repeating: 0, count: tiles * tiles)
+        for y in 1..<(height - 1) {
+            for x in 1..<(width - 1) {
+                let center = Int(pixels[y * width + x]) * 4
+                let neighbors = Int(pixels[(y - 1) * width + x]) + Int(pixels[(y + 1) * width + x])
+                    + Int(pixels[y * width + x - 1]) + Int(pixels[y * width + x + 1])
+                let tile = min(tiles - 1, y * tiles / height) * tiles + min(tiles - 1, x * tiles / width)
+                sums[tile] += abs(Double(center - neighbors)) / 1020
+                counts[tile] += 1
+            }
+        }
+        let best = zip(sums, counts).map { $1 > 0 ? $0 / Double($1) : 0 }.max() ?? 0
+        return min(1, best * 12)
     }
 
     /// Normalized bounding box of the largest face that is big enough to judge (≥ 8% of the width).

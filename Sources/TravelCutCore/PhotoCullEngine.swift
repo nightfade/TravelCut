@@ -29,8 +29,10 @@ public struct PhotoCullSummary: Sendable {
     public let starredCount: Int          // 2 stars or more
     public let rejectedCount: Int
     public let skippedUserMarked: Int     // already rated or labelled by the user
-    public let withoutRAW: Int            // JPEG/HEIC/DNG only: no sidecar written
+    public let notWritable: Int           // formats that hold no metadata Bridge reads (e.g. PNG), or exiftool missing
+    public let exiftoolMissing: Bool
     public let wroteRatings: Bool
+    public let featuresFile: URL?
 }
 
 /// Groups a trip's photos, picks the best of each group with Qwen's help and writes the result
@@ -158,21 +160,17 @@ public final class PhotoCullEngine: @unchecked Sendable {
             fraction: 0.97,
             message: configuration.writeRatings ? "正在写入星级…" : "试运行：只生成报告，不写入星级…"
         ))
-        let standouts = PhotoRater.standouts(kept: groups.indices.compactMap { index in
-            guard let judgement = judgements[index], judgement.keep == true else { return nil }
-            let best = groups[index].compactMap { metrics[$0] }.filter { !$0.isJunk }.map(\.pickScore).max() ?? 0
-            return PhotoRater.Candidate(group: index, highlight: judgement.highlightScore ?? 0, pickScore: best)
-        })
+        let exiftool = EmbeddedMetadataWriter.findExiftool()
+        var embeddedJobs: [EmbeddedMetadataWriter.Job] = []
         var report: [PhotoCullReport.Group] = []
-        var starred = 0, rejected = 0, skipped = 0, withoutRAW = 0
+        var starred = 0, rejected = 0, skipped = 0, notWritable = 0
         for (groupIndex, members) in groups.enumerated() {
             let number = groupIndex + 1
             let judgement = judgements[groupIndex]
             let result = PhotoRater.rate(
                 pickScores: members.map { metrics[$0]?.pickScore ?? 0 },
                 junk: members.map { metrics[$0]?.isJunk ?? true },
-                judgement: judgement,
-                isStandout: standouts.contains(groupIndex)
+                judgement: judgement
             )
             let bestTheme = judgement?.theme ?? result.best.flatMap { metrics[members[$0]]?.theme }
             var rows: [PhotoCullReport.Photo] = []
@@ -183,20 +181,28 @@ public final class PhotoCullEngine: @unchecked Sendable {
                 var keywords = [["TravelCut", "组", String(format: "组 %04d", number)]]
                 if let bestTheme { keywords.append(["TravelCut", "主题", bestTheme.rawValue]) }
                 var outcome = "试运行"
+                let fields = XMPSidecarWriter.Fields(
+                    rating: rating,
+                    title: PhotoRater.title(group: number, rank: rank, size: members.count),
+                    keywords: keywords
+                )
                 if let raw = item.sidecarTarget {
                     if configuration.writeRatings {
-                        let fields = XMPSidecarWriter.Fields(
-                            rating: rating,
-                            title: PhotoRater.title(group: number, rank: rank, size: members.count),
-                            keywords: keywords
-                        )
                         let written = try XMPSidecarWriter.apply(fields, to: XMPSidecarWriter.sidecarURL(for: raw))
                         outcome = written == .written ? "已写入" : "跳过：已有你的标记"
                         if written == .skippedUserMarks { skipped += 1 }
                     }
+                } else if let file = item.embeddedTarget {
+                    if exiftool == nil {
+                        outcome = "跳过：写入 JPEG 需要 exiftool"
+                        notWritable += 1
+                    } else if configuration.writeRatings {
+                        embeddedJobs.append(EmbeddedMetadataWriter.Job(file: file, fields: fields))
+                        outcome = "待写入"
+                    }
                 } else {
-                    outcome = "跳过：没有 RAW，未写入"
-                    withoutRAW += 1
+                    outcome = "跳过：这种格式不支持写入"
+                    notWritable += 1
                 }
                 if rating >= 2 { starred += 1 }
                 if rating < 0 { rejected += 1 }
@@ -220,6 +226,43 @@ public final class PhotoCullEngine: @unchecked Sendable {
             ))
         }
 
+        if let exiftool, !embeddedJobs.isEmpty {
+            progress(ProgressUpdate(fraction: 0.98, message: "正在把星级写入 \(embeddedJobs.count) 张 JPEG…"))
+            let outcomes = try EmbeddedMetadataWriter.apply(embeddedJobs, exiftool: exiftool)
+            for groupIndex in report.indices {
+                for photoIndex in report[groupIndex].photos.indices where report[groupIndex].photos[photoIndex].outcome == "待写入" {
+                    let url = URL(fileURLWithPath: report[groupIndex].photos[photoIndex].file)
+                    let text: String
+                    switch outcomes[url] {
+                    case .written?: text = "已写入"
+                    case .skippedUserMarks?: text = "跳过：已有你的标记"; skipped += 1
+                    default: text = "写入失败"
+                    }
+                    report[groupIndex].photos[photoIndex].outcome = text
+                }
+            }
+        }
+
+        var featuresURL: URL?
+        if ProcessInfo.processInfo.environment["TRAVELCUT_EXPORT_FEATURES"] == "1" {
+            // MobileCLIP image embeddings, for checking whether the user's taste can be learned.
+            let url = configuration.inputFolder.appendingPathComponent("TravelCut 照片特征.json")
+            var rows: [[String: Any]] = []
+            for (groupIndex, members) in groups.enumerated() {
+                for index in members {
+                    guard let embedding = metrics[index]?.embedding else { continue }
+                    rows.append([
+                        "file": items[index].primary.path,
+                        "group": groupIndex + 1,
+                        "face": metrics[index]?.faceSharpness != nil,
+                        "embedding": embedding.map { (Double($0) * 10_000).rounded() / 10_000 },
+                    ])
+                }
+            }
+            try JSONSerialization.data(withJSONObject: rows).write(to: url, options: .atomic)
+            featuresURL = url
+        }
+
         let reportURL = configuration.inputFolder.appendingPathComponent(Self.reportName)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -239,7 +282,8 @@ public final class PhotoCullEngine: @unchecked Sendable {
         return PhotoCullSummary(
             reportFile: reportURL, photoCount: items.count, groupCount: groups.count,
             starredCount: starred, rejectedCount: rejected, skippedUserMarked: skipped,
-            withoutRAW: withoutRAW, wroteRatings: configuration.writeRatings
+            notWritable: notWritable, exiftoolMissing: exiftool == nil,
+            wroteRatings: configuration.writeRatings, featuresFile: featuresURL
         )
     }
 }
@@ -253,7 +297,7 @@ struct PhotoCullReport: Codable {
         let pickScore: Double?
         let eyesClosed: Bool?
         let junk: Bool
-        let outcome: String
+        var outcome: String
         // Diagnostics for tuning.
         let junkReason: String?
         let sharpness: Double?
@@ -269,7 +313,7 @@ struct PhotoCullReport: Codable {
         let group: Int
         let theme: String?
         let judgement: PhotoGroupJudgement?
-        let photos: [Photo]
+        var photos: [Photo]
     }
 
     let generatedAt: Date
@@ -279,5 +323,5 @@ struct PhotoCullReport: Codable {
     let wroteRatings: Bool
     let photoCount: Int
     let groupCount: Int
-    let groups: [Group]
+    var groups: [Group]
 }

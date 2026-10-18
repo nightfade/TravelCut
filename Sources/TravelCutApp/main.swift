@@ -48,7 +48,7 @@ struct ContentView: View {
                             .fontWeight(.medium)
                         Text(model.inputFolder?.path ?? (model.mode == .video
                             ? "支持 MP4、MOV、M4V、MTS 和 M2TS"
-                            : "会递归查看所有子文件夹；星级只写入 RAW 照片"))
+                            : "会递归查看所有子文件夹；RAW 写进旁边的 .xmp，JPEG 写进文件元数据（需要 exiftool）"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -108,9 +108,9 @@ struct ContentView: View {
                     } else {
                         Label("同一文件夹里连续拍的相似照片分成一组，按拍摄时间排序时组员挨在一起", systemImage: "square.stack.3d.up")
                         Label("Qwen3-VL-4B 从每组技术最好的几张里挑一张，并判断值不值得留", systemImage: "brain.head.profile")
-                        Label("每组最佳 3 星（最出彩的 4 星），一张接近的备选 2 星，废片标为拒绝", systemImage: "star.leadinghalf.filled")
+                        Label("每组最佳 3 星，接近的备选 2 星，全黑、全白和严重失焦标为拒绝", systemImage: "star.leadinghalf.filled")
                         Label("标题写「组 0042 · 第 1/5」，关键字写组号和主题", systemImage: "text.badge.checkmark")
-                        Label("不改 RAW 原片，不覆盖你已有的星级、颜色标签和 Camera Raw 调整", systemImage: "checkmark.shield")
+                        Label("不改像素，不覆盖你已有的星级、颜色标签和 Camera Raw 调整", systemImage: "checkmark.shield")
                         Toggle("试运行：只生成报告，不写入星级", isOn: $model.photoDryRun)
                     }
                 }
@@ -306,7 +306,8 @@ final class AppModel: ObservableObject {
                 lastOutputFolder = inputFolder
                 var lines = ["完成：\(summary.photoCount) 张照片分成 \(summary.groupCount) 组，2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张"]
                 if summary.skippedUserMarked > 0 { lines.append("已有你的星级或标签而跳过 \(summary.skippedUserMarked) 张") }
-                if summary.withoutRAW > 0 { lines.append("没有 RAW、未写入 \(summary.withoutRAW) 张") }
+                if summary.exiftoolMissing { lines.append("写入 JPEG 需要 exiftool：brew install exiftool") }
+                if summary.notWritable > 0 { lines.append("未写入 \(summary.notWritable) 张") }
                 lines.append(summary.wroteRatings
                     ? "在 Bridge 里按创建日期排序、过滤 2 星或 3 星以上即可"
                     : "试运行：没有写入星级，结果见文件夹里的「\(PhotoCullEngine.reportName)」")

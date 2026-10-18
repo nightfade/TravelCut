@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -36,21 +37,14 @@ extension TravelCutDiagnostics {
         let plain = PhotoRater.rate(pickScores: [0.5, 0.9, 0.88, 0.2], junk: [false, false, false, true], judgement: nil)
         expect(plain.ratings == [0, 3, 2, -1], "best 3, close alternate 2, junk rejected, got \(plain.ratings)")
         expect(plain.order == [1, 2, 0, 3], "ranking puts rejects last, got \(plain.order)")
-        // Coarse, tied scores still give about 15% standouts, the technically better ones first.
-        let kept = (0..<34).map { PhotoRater.Candidate(group: $0, highlight: $0 < 15 ? 0.85 : 0.7, pickScore: Double($0) / 100) }
-        let top = PhotoRater.standouts(kept: kept)
-        expect(top == [9, 10, 11, 12, 13, 14], "15% of kept groups, ties broken by technical score, got \(top.sorted())")
-        expect(PhotoRater.standouts(kept: [PhotoRater.Candidate(group: 0, highlight: 0.7, pickScore: 1)]).isEmpty,
-               "no standout below 0.82")
-        let ordinary = PhotoRater.rate(pickScores: [0.5], junk: [false],
-            judgement: PhotoGroupJudgement(bestMember: 0, keep: true, highlightScore: 0.6, theme: nil, label: nil, reason: nil))
-        expect(ordinary.ratings == [2], "an ordinary kept photo gets 2 stars")
         let qwenPick = PhotoGroupJudgement(bestMember: 2, keep: true, highlightScore: 0.9, theme: .nature, label: "湖边", reason: nil)
-        let picked = PhotoRater.rate(pickScores: [0.5, 0.9, 0.88], junk: [false, false, false], judgement: qwenPick, isStandout: true)
-        expect(picked.ratings == [0, 2, 4], "Qwen's choice wins and a standout gets 4, got \(picked.ratings)")
+        let picked = PhotoRater.rate(pickScores: [0.5, 0.9, 0.88], junk: [false, false, false], judgement: qwenPick)
+        expect(picked.ratings == [0, 2, 3], "Qwen's choice gets 3 and the technical best becomes the alternate, got \(picked.ratings)")
         let dropped = PhotoGroupJudgement(bestMember: 0, keep: false, highlightScore: 0.3, theme: nil, label: nil, reason: nil)
         let weak = PhotoRater.rate(pickScores: [0.6, 0.59, 0.58], junk: [false, false, false], judgement: dropped)
         expect(weak.ratings == [2, 0, 0], "a group Qwen would drop keeps its best at 2 with no alternate, got \(weak.ratings)")
+        let session = PhotoRater.rate(pickScores: [1, 0.99, 0.98, 0.97, 0.5, 0.96, 0.4, 0.3], junk: [Bool](repeating: false, count: 8), judgement: nil)
+        expect(session.ratings.filter { $0 == 2 }.count == 2, "one close alternate per four photos, got \(session.ratings)")
         let allJunk = PhotoRater.rate(pickScores: [0.1, 0.2], junk: [true, true], judgement: nil)
         expect(allJunk.ratings == [-1, -1] && allJunk.best == nil, "an all-junk group is rejected")
         expect(PhotoRater.title(group: 42, rank: 1, size: 5) == "组 0042 · 第 1/5", "group title")
@@ -70,6 +64,31 @@ extension TravelCutDiagnostics {
         let schema = QwenVideoAnalyzer.photoSchema(count: 3, themes: [.nature, .people])
         expect(schema.contains(#""enum":[1,2,3]"#), "photo schema limits best to the shown photos")
         expect((try? JSONSerialization.jsonObject(with: Data(schema.utf8))) != nil, "photo schema is valid JSON")
+
+        // A group never spans more than 90 s from its first photo, however similar each step is.
+        let walk = PhotoGrouper.group(
+            times: [0, 40, 80, 120, 160].map { base.addingTimeInterval($0) },
+            folders: [String](repeating: "/t", count: 5)
+        ) { _, _ in 0.1 }
+        expect(walk == [[0, 1, 2], [3, 4]], "groups are capped at 90 s, got \(walk)")
+
+        // Embedded metadata (JPEG): ownership rules and the arguments sent to exiftool.
+        typealias E = EmbeddedMetadataWriter.Existing
+        expect(EmbeddedMetadataWriter.decide(E(rating: 0, label: "", title: "", hierarchical: [])), "fresh JPEG is written")
+        expect(!EmbeddedMetadataWriter.decide(E(rating: 5, label: "", title: "", hierarchical: [])), "user rating is respected")
+        expect(!EmbeddedMetadataWriter.decide(E(rating: 0, label: "红色", title: "", hierarchical: [])), "user label is respected")
+        expect(EmbeddedMetadataWriter.decide(E(rating: 3, label: "", title: "", hierarchical: ["TravelCut|写入星级|3"])), "own rating may be replaced")
+        expect(!EmbeddedMetadataWriter.decide(E(rating: 4, label: "", title: "", hierarchical: ["TravelCut|写入星级|3"])), "changed own rating is respected")
+        let job = EmbeddedMetadataWriter.Job(file: URL(fileURLWithPath: "/t/A.JPG"), fields: .init(
+            rating: 2, title: "组 0001 · 第 2/3", keywords: [["TravelCut", "组", "组 0001"]]))
+        let args = EmbeddedMetadataWriter.arguments(for: job, existing: E(
+            rating: 3, label: "", title: "我的标题", hierarchical: ["TravelCut|组|组 0009", "TravelCut|写入星级|3", "巴黎"]))
+        expect(args.contains("-XMP-xmp:Rating=2") && args.last == "/t/A.JPG", "rating argument and file last")
+        expect(!args.contains { $0.hasPrefix("-XMP-dc:Title") }, "a user's own title is kept")
+        expect(args.contains("-XMP-lr:HierarchicalSubject-=TravelCut|组|组 0009") && args.contains("-XMP-dc:Subject-=组 0009"),
+               "old TravelCut keywords are removed")
+        expect(!args.contains { $0.contains("巴黎") }, "user keywords are untouched")
+        expect(args.contains("-XMP-lr:HierarchicalSubject+=TravelCut|写入星级|2"), "new ownership marker")
 
         failures += previewSelfTest()
         failures += xmpSelfTest()
@@ -103,6 +122,12 @@ extension TravelCutDiagnostics {
            ] as CFDictionary),
            max(embedded.width, embedded.height) >= 1000 {
             failures.append("photo: test setup did not produce a small embedded thumbnail (\(embedded.width)px)")
+        }
+        // Local sharpness: a fine pattern is sharp, the same pattern blurred is junk.
+        if let pattern = makeChecker(), let blurred = blur(pattern) {
+            let sharp = PhotoAnalyzer.localSharpness(of: pattern), soft = PhotoAnalyzer.localSharpness(of: blurred)
+            if sharp < 0.3 { failures.append("photo: sharp pattern scored \(sharp)") }
+            if soft >= PhotoMetrics.blurThreshold { failures.append("photo: blurred pattern scored \(soft)") }
         }
         let preview = PhotoDiscovery.preview(of: url)
         if (preview.map { max($0.width, $0.height) } ?? 0) < 1000 {
@@ -208,5 +233,23 @@ extension TravelCutDiagnostics {
             expect(read(url) == original, "\(name): left byte for byte")
         }
         return failures
+    }
+
+    private static func makeChecker() -> CGImage? {
+        guard let context = CGContext(data: nil, width: 1200, height: 800, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        for y in stride(from: 0, to: 800, by: 6) {
+            for x in stride(from: 0, to: 1200, by: 6) where (x / 6 + y / 6) % 2 == 0 {
+                context.setFillColor(gray: 1, alpha: 1)
+                context.fill(CGRect(x: x, y: y, width: 6, height: 6))
+            }
+        }
+        return context.makeImage()
+    }
+
+    private static func blur(_ image: CGImage) -> CGImage? {
+        let input = CIImage(cgImage: image)
+        let output = input.clampedToExtent().applyingGaussianBlur(sigma: 40).cropped(to: input.extent)
+        return CIContext().createCGImage(output, from: input.extent)
     }
 }

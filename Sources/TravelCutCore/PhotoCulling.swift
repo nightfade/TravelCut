@@ -10,6 +10,9 @@ enum PhotoGrouper {
     /// Same scene shot again a little later, or from a slightly different angle.
     static let sceneGap: TimeInterval = 60
     static let sceneDistance: Float = 0.45
+    /// A group never spans more than this from its first photo. Without it, walking down a street
+    /// shooting every few seconds chained 47 different houses into one group.
+    static let maxSpan: TimeInterval = 90
 
     /// `distance(i, j)` is the Vision feature-print distance between photos i and j, nil if unknown.
     /// `junk` marks unusable frames: a blurred frame is as far from its burst (≈0.9) as a different
@@ -21,12 +24,14 @@ enum PhotoGrouper {
         var lastIndexInFolder: [String: Int] = [:]
         var groupOfIndex: [Int: Int] = [:]
         var groups: [[Int]] = []
+        var groupStart: [Date] = []
         for index in times.indices {
             let folder = folders[index]
             guard let previous = lastIndexInFolder[folder], let groupIndex = groupOfIndex[previous],
                   groups[groupIndex].last == previous
             else {
                 groups.append([index])
+                groupStart.append(times[index])
                 groupOfIndex[index] = groups.count - 1
                 lastIndexInFolder[folder] = index
                 continue
@@ -36,7 +41,9 @@ enum PhotoGrouper {
             let d = distance(previous, index)
             let isJunk = { (i: Int) in i < junk.count && junk[i] }
             let joins: Bool
-            if gap <= burstGap, isJunk(index) || isJunk(previous) {
+            if times[index].timeIntervalSince(groupStart[groupIndex]) > maxSpan {
+                joins = false
+            } else if gap <= burstGap, isJunk(index) || isJunk(previous) {
                 joins = true
             } else if let d {
                 joins = (gap <= burstGap && d <= burstDistance) || (gap <= sceneGap && d <= sceneDistance)
@@ -48,6 +55,7 @@ enum PhotoGrouper {
                 groupOfIndex[index] = groupIndex
             } else {
                 groups.append([index])
+                groupStart.append(times[index])
                 groupOfIndex[index] = groups.count - 1
             }
         }
@@ -65,18 +73,17 @@ struct PhotoGroupJudgement: Codable, Sendable {
     let reason: String?
 }
 
-/// Star ratings for one group. Lenient on purpose: the user reviews everything that gets stars.
+/// Star ratings for one group. Stars mark group representatives, not quality: checked against the
+/// photos the user edited from a 9,000-photo trip, neither Qwen's scores nor any technical score
+/// predicted which frame the user would keep, so no 4 stars until a taste model exists.
 ///
-/// - best of the group: 4 stars for the trip's standouts, 3 when Qwen scores it as worth keeping,
-///   2 when Qwen scores it as ordinary or would not keep it
-/// - one close alternative in groups of 3+: 2 stars
+/// - best of the group (Qwen's pick when it gave one): 3 stars, 2 when Qwen would not keep the group
+/// - close alternatives: 2 stars, up to one per four photos, within 95% of the best's score
 /// - clearly unusable frames: rejected
 /// - everything else: left unrated
 enum PhotoRater {
-    static let standoutScore = 0.82
-    static let standoutShare = 0.15
-    static let ordinaryScore = 0.65
-    static let alternateRatio = 0.92
+    static let alternateRatio = 0.95
+    static let alternatesPer = 4
 
     struct Result: Equatable {
         let ratings: [Int]   // per member: -1 rejected, 0 unrated, 1...5 stars
@@ -84,26 +91,7 @@ enum PhotoRater {
         let best: Int?
     }
 
-    struct Candidate {
-        let group: Int
-        let highlight: Double
-        let pickScore: Double   // breaks ties: Qwen's scores are coarse (0.6 / 0.7 / 0.85)
-    }
-
-    /// The trip's standouts: the top 15% of kept groups by Qwen's score, ties broken by the technical
-    /// score, and never below 0.82. Counting groups keeps 4 stars rare however coarse the scores are.
-    static func standouts(kept: [Candidate]) -> Set<Int> {
-        let quota = Int((Double(kept.count) * standoutShare).rounded(.up))
-        return Set(kept
-            .filter { $0.highlight >= standoutScore }
-            .sorted { ($0.highlight, $0.pickScore) > ($1.highlight, $1.pickScore) }
-            .prefix(quota)
-            .map(\.group))
-    }
-
-    static func rate(
-        pickScores: [Double], junk: [Bool], judgement: PhotoGroupJudgement?, isStandout: Bool = false
-    ) -> Result {
+    static func rate(pickScores: [Double], junk: [Bool], judgement: PhotoGroupJudgement?) -> Result {
         let count = pickScores.count
         var ratings = [Int](repeating: 0, count: count)
         let usable = (0..<count).filter { !junk[$0] }.sorted { pickScores[$0] > pickScores[$1] }
@@ -114,24 +102,14 @@ enum PhotoRater {
         }
         var best = technicalBest
         if let chosen = judgement?.bestMember, usable.contains(chosen) { best = chosen }
-
-        switch judgement?.keep {
-        case .some(true):
-            if isStandout {
-                ratings[best] = 4
-            } else {
-                ratings[best] = (judgement?.highlightScore ?? 1) >= ordinaryScore ? 3 : 2
-            }
-        case .some(false):
-            ratings[best] = 2
-        case .none:
-            ratings[best] = 3
-        }
+        ratings[best] = judgement?.keep == false ? 2 : 3
 
         let others = usable.filter { $0 != best }
-        if judgement?.keep != false, count >= 3, let alternate = others.first,
-           pickScores[alternate] >= pickScores[best] * alternateRatio {
-            ratings[alternate] = 2
+        if judgement?.keep != false {
+            let quota = Int((Double(count) / Double(alternatesPer)).rounded(.up))
+            for alternate in others.prefix(quota) where pickScores[alternate] >= pickScores[best] * alternateRatio {
+                ratings[alternate] = 2
+            }
         }
         let rejected = (0..<count).filter { junk[$0] }.sorted { pickScores[$0] > pickScores[$1] }
         return Result(ratings: ratings, order: [best] + others + rejected, best: best)

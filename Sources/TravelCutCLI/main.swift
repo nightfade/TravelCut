@@ -129,8 +129,9 @@ struct TravelCutCLI {
             print("完成：\(summary.photoCount) 张照片，分成 \(summary.groupCount) 组")
             print("2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张")
             if summary.skippedUserMarked > 0 { print("已有你的星级或标签而跳过：\(summary.skippedUserMarked) 张") }
-            if summary.withoutRAW > 0 { print("没有 RAW、未写入：\(summary.withoutRAW) 张") }
-            print(summary.wroteRatings ? "星级已写入 RAW 旁边的 .xmp" : "试运行：没有写入任何星级")
+            if summary.notWritable > 0 { print("未写入：\(summary.notWritable) 张（格式不支持，或写入 JPEG 需要先安装 exiftool）") }
+            print(summary.wroteRatings ? "星级已写入：RAW 写进旁边的 .xmp，JPEG 写进文件元数据" : "试运行：没有写入任何星级")
+            if let features = summary.featuresFile { print("特征：\(features.path)") }
             print("报告：\(summary.reportFile.path)")
         } catch {
             FileHandle.standardError.write(Data("错误：\(error.localizedDescription)\n".utf8))
