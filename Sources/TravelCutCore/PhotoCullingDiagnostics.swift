@@ -1,5 +1,7 @@
 import CoreGraphics
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 extension TravelCutDiagnostics {
     public static func photoCullingSelfTest() -> [String] {
@@ -65,7 +67,43 @@ extension TravelCutDiagnostics {
         expect(schema.contains(#""enum":[1,2,3]"#), "photo schema limits best to the shown photos")
         expect((try? JSONSerialization.jsonObject(with: Data(schema.utf8))) != nil, "photo schema is valid JSON")
 
+        failures += previewSelfTest()
         failures += xmpSelfTest()
+        return failures
+    }
+
+    /// A file whose embedded thumbnail is tiny (as in Sony ARW) must still yield a usable preview.
+    private static func previewSelfTest() -> [String] {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("TravelCut-thumb-\(UUID().uuidString).jpg")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let context = CGContext(
+            data: nil, width: 2000, height: 1500, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return ["photo: preview test setup failed"] }
+        context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 2000, height: 1500))
+        guard let image = context.makeImage(),
+              let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
+        else { return ["photo: preview test setup failed"] }
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationEmbedThumbnail: true,
+            kCGImageDestinationImageMaxPixelSize: 2000,
+        ] as CFDictionary)
+        CGImageDestinationFinalize(destination)
+
+        var failures: [String] = []
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let embedded = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+               kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+               kCGImageSourceThumbnailMaxPixelSize: 1024,
+           ] as CFDictionary),
+           max(embedded.width, embedded.height) >= 1000 {
+            failures.append("photo: test setup did not produce a small embedded thumbnail (\(embedded.width)px)")
+        }
+        let preview = PhotoDiscovery.preview(of: url)
+        if (preview.map { max($0.width, $0.height) } ?? 0) < 1000 {
+            failures.append("photo: tiny embedded thumbnail was used, got \(preview?.width ?? 0)px")
+        }
         return failures
     }
 

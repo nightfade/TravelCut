@@ -202,7 +202,15 @@ public final class PhotoCullEngine: @unchecked Sendable {
                 rows.append(PhotoCullReport.Photo(
                     file: item.primary.path, capturedAt: item.capturedAt, rating: rating, rank: rank,
                     pickScore: m.map { ($0.pickScore * 1000).rounded() / 1000 },
-                    eyesClosed: m?.eyesClosed, junk: m?.isJunk ?? true, outcome: outcome
+                    eyesClosed: m?.eyesClosed, junk: m?.isJunk ?? true, outcome: outcome,
+                    junkReason: m == nil ? "无法读取" : m?.junkReason,
+                    sharpness: m.map { ($0.sharpness * 1000).rounded() / 1000 },
+                    faceSharpness: m?.faceSharpness.map { ($0 * 1000).rounded() / 1000 },
+                    brightness: m.map { ($0.brightness * 1000).rounded() / 1000 },
+                    aesthetic: m.map { ($0.aesthetic * 1000).rounded() / 1000 },
+                    utility: m?.isUtility,
+                    clipLabel: m?.semanticLabel,
+                    previewSize: m?.previewSize
                 ))
             }
             report.append(PhotoCullReport.Group(
@@ -244,6 +252,15 @@ struct PhotoCullReport: Codable {
         let eyesClosed: Bool?
         let junk: Bool
         let outcome: String
+        // Diagnostics for tuning.
+        let junkReason: String?
+        let sharpness: Double?
+        let faceSharpness: Double?
+        let brightness: Double?
+        let aesthetic: Double?
+        let utility: Bool?
+        let clipLabel: String?
+        let previewSize: Int?
     }
 
     struct Group: Codable {

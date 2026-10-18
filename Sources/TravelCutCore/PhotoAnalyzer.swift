@@ -78,14 +78,23 @@ enum PhotoDiscovery {
         return (date.addingTimeInterval(fraction), zone)
     }
 
-    /// The camera's embedded preview, so RAW files are not fully decoded.
+    /// The camera's embedded preview when it is big enough, so RAW files are usually not decoded.
+    /// Some RAW files (Sony ARW among them) also carry a 160×120 thumbnail that ImageIO may hand
+    /// back first; anything that small is useless for judging, so the RAW is decoded instead.
+    static let minimumPreviewSize = 1000
+
     static func preview(of url: URL, maxPixelSize: Int = 1024) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [
+        var options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
+        if let embedded = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+           max(embedded.width, embedded.height) >= min(minimumPreviewSize, maxPixelSize) {
+            return embedded
+        }
+        options[kCGImageSourceCreateThumbnailFromImageAlways] = true
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
@@ -115,6 +124,7 @@ struct PhotoMetrics: Sendable {
     let semanticLabel: String?
     let theme: HighlightTheme?
     let featurePrint: VNFeaturePrintObservation?
+    let previewSize: Int           // longest side of the image that was analysed
 
     /// How good this frame is technically, for choosing within a group. Faces dominate when present.
     var pickScore: Double {
@@ -126,14 +136,22 @@ struct PhotoMetrics: Sendable {
         return 0.55 * sharpness + 0.30 * aesthetic + 0.15 * exposure
     }
 
-    /// Clearly unusable frames. Lenient on exposure because RAW files have room to recover.
-    var isJunk: Bool {
+    /// Why the frame is clearly unusable, or nil. Lenient on purpose: Qwen and the user decide the rest.
+    /// MobileCLIP's rejection prompts alone are not enough, because everyday photos that match none of
+    /// the travel themes often score highest on "accidental frame"; they count only when the frame is
+    /// also soft.
+    var junkReason: String? {
         let rejected: Set<String> = ["误拍废片", "遮挡镜头", "空白画面", "屏幕文件"]
-        return isUtility
-            || brightness < 0.015 || brightness > 0.985
-            || (sharpness < 0.08 && (faceSharpness ?? 0) < 0.08)
-            || (semanticLabel.map(rejected.contains) ?? false)
+        let soft = sharpness < 0.08 && (faceSharpness ?? 0) < 0.08
+        if brightness < 0.015 { return "全黑" }
+        if brightness > 0.985 { return "全白" }
+        if soft { return "模糊" }
+        if isUtility, sharpness < 0.2 { return "无内容画面" }
+        if let label = semanticLabel, rejected.contains(label), sharpness < 0.2 { return label }
+        return nil
     }
+
+    var isJunk: Bool { junkReason != nil }
 }
 
 final class PhotoAnalyzer {
@@ -162,7 +180,8 @@ final class PhotoAnalyzer {
             isUtility: frame.isUtility,
             semanticLabel: frame.semantic?.label,
             theme: frame.semantic?.theme,
-            featurePrint: frame.featurePrint
+            featurePrint: frame.featurePrint,
+            previewSize: max(image.width, image.height)
         )
     }
 
