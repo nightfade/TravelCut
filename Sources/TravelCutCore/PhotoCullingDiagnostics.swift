@@ -36,13 +36,17 @@ extension TravelCutDiagnostics {
         let plain = PhotoRater.rate(pickScores: [0.5, 0.9, 0.88, 0.2], junk: [false, false, false, true], judgement: nil)
         expect(plain.ratings == [0, 3, 2, -1], "best 3, close alternate 2, junk rejected, got \(plain.ratings)")
         expect(plain.order == [1, 2, 0, 3], "ranking puts rejects last, got \(plain.order)")
-        expect(PhotoRater.standoutThreshold(keptScores: [0.85, 0.85, 0.85, 0.85, 0.9]) == 0.9,
-               "standout is relative when Qwen scores everything alike")
-        expect(PhotoRater.standoutThreshold(keptScores: [0.5, 0.6, 0.7]) == 0.82, "standout never drops below 0.82")
-        let tied = PhotoRater.standoutThreshold(keptScores: [0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.9])
-        expect(tied > 0.85 && tied <= 0.9, "a score most groups share is not a standout, got \(tied)")
+        // Coarse, tied scores still give about 15% standouts, the technically better ones first.
+        let kept = (0..<34).map { PhotoRater.Candidate(group: $0, highlight: $0 < 15 ? 0.85 : 0.7, pickScore: Double($0) / 100) }
+        let top = PhotoRater.standouts(kept: kept)
+        expect(top == [9, 10, 11, 12, 13, 14], "15% of kept groups, ties broken by technical score, got \(top.sorted())")
+        expect(PhotoRater.standouts(kept: [PhotoRater.Candidate(group: 0, highlight: 0.7, pickScore: 1)]).isEmpty,
+               "no standout below 0.82")
+        let ordinary = PhotoRater.rate(pickScores: [0.5], junk: [false],
+            judgement: PhotoGroupJudgement(bestMember: 0, keep: true, highlightScore: 0.6, theme: nil, label: nil, reason: nil))
+        expect(ordinary.ratings == [2], "an ordinary kept photo gets 2 stars")
         let qwenPick = PhotoGroupJudgement(bestMember: 2, keep: true, highlightScore: 0.9, theme: .nature, label: "湖边", reason: nil)
-        let picked = PhotoRater.rate(pickScores: [0.5, 0.9, 0.88], junk: [false, false, false], judgement: qwenPick)
+        let picked = PhotoRater.rate(pickScores: [0.5, 0.9, 0.88], junk: [false, false, false], judgement: qwenPick, isStandout: true)
         expect(picked.ratings == [0, 2, 4], "Qwen's choice wins and a standout gets 4, got \(picked.ratings)")
         let dropped = PhotoGroupJudgement(bestMember: 0, keep: false, highlightScore: 0.3, theme: nil, label: nil, reason: nil)
         let weak = PhotoRater.rate(pickScores: [0.6, 0.59, 0.58], junk: [false, false, false], judgement: dropped)

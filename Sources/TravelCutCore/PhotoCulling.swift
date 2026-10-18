@@ -67,25 +67,16 @@ struct PhotoGroupJudgement: Codable, Sendable {
 
 /// Star ratings for one group. Lenient on purpose: the user reviews everything that gets stars.
 ///
-/// - best of the group: 3 stars, 4 for the trip's standouts, 2 when Qwen would not keep it
+/// - best of the group: 4 stars for the trip's standouts, 3 when Qwen scores it as worth keeping,
+///   2 when Qwen scores it as ordinary or would not keep it
 /// - one close alternative in groups of 3+: 2 stars
 /// - clearly unusable frames: rejected
 /// - everything else: left unrated
 enum PhotoRater {
     static let standoutScore = 0.82
     static let standoutShare = 0.15
+    static let ordinaryScore = 0.65
     static let alternateRatio = 0.92
-
-    /// Qwen scores most decent travel photos around 0.85, so 4 stars go to the top 15% of the
-    /// trip's kept groups instead of to a fixed score. A standout must also beat the median, so a
-    /// score most groups share never counts, and it is never below 0.82.
-    static func standoutThreshold(keptScores: [Double]) -> Double {
-        let sorted = keptScores.sorted()
-        guard !sorted.isEmpty else { return standoutScore }
-        let index = min(sorted.count - 1, Int((Double(sorted.count) * (1 - standoutShare)).rounded(.down)))
-        let median = sorted[(sorted.count - 1) / 2]
-        return max(standoutScore, sorted[index], median.nextUp)
-    }
 
     struct Result: Equatable {
         let ratings: [Int]   // per member: -1 rejected, 0 unrated, 1...5 stars
@@ -93,8 +84,25 @@ enum PhotoRater {
         let best: Int?
     }
 
+    struct Candidate {
+        let group: Int
+        let highlight: Double
+        let pickScore: Double   // breaks ties: Qwen's scores are coarse (0.6 / 0.7 / 0.85)
+    }
+
+    /// The trip's standouts: the top 15% of kept groups by Qwen's score, ties broken by the technical
+    /// score, and never below 0.82. Counting groups keeps 4 stars rare however coarse the scores are.
+    static func standouts(kept: [Candidate]) -> Set<Int> {
+        let quota = Int((Double(kept.count) * standoutShare).rounded(.up))
+        return Set(kept
+            .filter { $0.highlight >= standoutScore }
+            .sorted { ($0.highlight, $0.pickScore) > ($1.highlight, $1.pickScore) }
+            .prefix(quota)
+            .map(\.group))
+    }
+
     static func rate(
-        pickScores: [Double], junk: [Bool], judgement: PhotoGroupJudgement?, standout: Double = standoutScore
+        pickScores: [Double], junk: [Bool], judgement: PhotoGroupJudgement?, isStandout: Bool = false
     ) -> Result {
         let count = pickScores.count
         var ratings = [Int](repeating: 0, count: count)
@@ -109,7 +117,11 @@ enum PhotoRater {
 
         switch judgement?.keep {
         case .some(true):
-            ratings[best] = (judgement?.highlightScore ?? 0) >= standout ? 4 : 3
+            if isStandout {
+                ratings[best] = 4
+            } else {
+                ratings[best] = (judgement?.highlightScore ?? 1) >= ordinaryScore ? 3 : 2
+            }
         case .some(false):
             ratings[best] = 2
         case .none:

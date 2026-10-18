@@ -158,9 +158,11 @@ public final class PhotoCullEngine: @unchecked Sendable {
             fraction: 0.97,
             message: configuration.writeRatings ? "正在写入星级…" : "试运行：只生成报告，不写入星级…"
         ))
-        let standout = PhotoRater.standoutThreshold(
-            keptScores: judgements.compactMap { $0?.keep == true ? $0?.highlightScore : nil }
-        )
+        let standouts = PhotoRater.standouts(kept: groups.indices.compactMap { index in
+            guard let judgement = judgements[index], judgement.keep == true else { return nil }
+            let best = groups[index].compactMap { metrics[$0] }.filter { !$0.isJunk }.map(\.pickScore).max() ?? 0
+            return PhotoRater.Candidate(group: index, highlight: judgement.highlightScore ?? 0, pickScore: best)
+        })
         var report: [PhotoCullReport.Group] = []
         var starred = 0, rejected = 0, skipped = 0, withoutRAW = 0
         for (groupIndex, members) in groups.enumerated() {
@@ -170,7 +172,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
                 pickScores: members.map { metrics[$0]?.pickScore ?? 0 },
                 junk: members.map { metrics[$0]?.isJunk ?? true },
                 judgement: judgement,
-                standout: standout
+                isStandout: standouts.contains(groupIndex)
             )
             let bestTheme = judgement?.theme ?? result.best.flatMap { metrics[members[$0]]?.theme }
             var rows: [PhotoCullReport.Photo] = []
