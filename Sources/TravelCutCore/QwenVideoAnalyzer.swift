@@ -115,6 +115,92 @@ actor QwenVideoAnalyzer {
         return try parse(output, duration: candidate.duration, allowedThemes: orderedThemes)
     }
 
+    /// Picks the best of a few near-identical photos and judges whether the group is worth keeping.
+    func judgePhotoGroup(
+        images: [URL],
+        selectedThemes: Set<HighlightTheme>
+    ) async throws -> PhotoGroupJudgement {
+        guard let modelDirectory else {
+            throw TravelCutError.modelUnavailable("模型尚未安装")
+        }
+        let orderedThemes = HighlightTheme.allCases.filter(selectedThemes.contains)
+        let count = images.count
+        let prompt = """
+        你是旅行摄影的选片编辑。以下 \(count) 张照片按顺序编号为 1 到 \(count)，是同一场景连拍或接连拍下的。
+        用户想保留的内容：\(orderedThemes.map(\.qwenGuidance).joined(separator: "；"))。
+        best 填最值得保留的那一张的编号：优先主体清晰对焦、人物没有闭眼且表情自然、构图完整、曝光可用。
+        keep 判断这组照片是否值得作为这次旅行的照片保留；清晰且有记录价值的日常旅途画面也应保留，只有明显无内容、
+        误拍或与已选内容无关时才为 false。highlight_score 是这组最佳照片的出彩程度，0 到 1，普通但可用约 0.5，
+        让人眼前一亮的约 0.85 以上。theme 从这些内容类型中选一个最贴切的：\(orderedThemes.map(\.rawValue).joined(separator: "、"))。
+        label 必须是2到8个汉字，reason 必须使用中文且不超过30个汉字。只输出 JSON。
+        """
+        let executable = try runtimeExecutable()
+        let output = try await run(
+            executable: executable,
+            workingDirectory: executable.deletingLastPathComponent(),
+            arguments: [
+                "-m", modelDirectory.appendingPathComponent(modelFilename).path,
+                "--mmproj", modelDirectory.appendingPathComponent(projectorFilename).path,
+                "--image", images.map(\.path).joined(separator: ","),
+                "-p", prompt,
+                "--json-schema", Self.photoSchema(count: count, themes: orderedThemes),
+                "--temp", "0",
+                "-n", "256",
+                "-c", "8192",
+                "--cache-type-k", "q8_0",
+                "--cache-type-v", "q8_0",
+                "--image-max-tokens", "512",
+                "--gpu-layers", "all",
+                "--fit", "on",
+                "--fit-target", "2048",
+                "--no-warmup",
+                "--no-perf",
+                "--log-verbosity", "1",
+            ]
+        )
+        if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
+            FileHandle.standardError.write(Data("QWEN PHOTO RAW:\n\(output)\n".utf8))
+        }
+        guard let first = output.firstIndex(of: "{"), let last = output.lastIndex(of: "}"), first <= last,
+              let data = String(output[first...last]).data(using: .utf8),
+              let response = try? JSONDecoder().decode(PhotoResponse.self, from: data)
+        else { throw TravelCutError.modelResponseInvalid }
+        let best = (1...count).contains(response.best) ? response.best - 1 : nil
+        return PhotoGroupJudgement(
+            bestMember: best,
+            keep: response.keep,
+            highlightScore: min(1, max(0, response.highlightScore)),
+            theme: HighlightTheme(rawValue: response.theme).flatMap { orderedThemes.contains($0) ? $0 : nil },
+            label: sanitizeLabel(response.label),
+            reason: response.reason
+        )
+    }
+
+    private struct PhotoResponse: Decodable {
+        let keep: Bool
+        let best: Int
+        let highlightScore: Double
+        let theme: String
+        let label: String
+        let reason: String
+
+        enum CodingKeys: String, CodingKey {
+            case keep, best, theme, label, reason
+            case highlightScore = "highlight_score"
+        }
+    }
+
+    static func photoSchema(count: Int, themes: [HighlightTheme]) -> String {
+        let names = (themes.isEmpty ? HighlightTheme.allCases : themes).map { "\"\($0.rawValue)\"" }
+        let indices = (1...max(1, count)).map(String.init).joined(separator: ",")
+        return """
+        {"type":"object","properties":{"keep":{"type":"boolean"},"best":{"type":"integer","enum":[\(indices)]},\
+        "highlight_score":{"type":"number"},"theme":{"type":"string","enum":[\(names.joined(separator: ","))]},\
+        "label":{"type":"string","maxLength":12},"reason":{"type":"string","maxLength":48}},\
+        "required":["keep","best","highlight_score","theme","label","reason"],"additionalProperties":false}
+        """
+    }
+
     private func makeFrameFiles(
         for candidate: HighlightCandidate,
         count requestedCount: Int,

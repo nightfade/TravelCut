@@ -4,7 +4,8 @@ import Foundation
 import Vision
 
 final class VisionAnalyzer {
-    private struct FrameResult {
+    /// Per-image result; also used directly by the photo culling mode.
+    struct FrameResult {
         let score: Double
         let aesthetic: Double
         let technical: Double
@@ -104,7 +105,7 @@ final class VisionAnalyzer {
         )
     }
 
-    private func analyzeFrame(_ image: CGImage) -> FrameResult {
+    func analyzeFrame(_ image: CGImage) -> FrameResult {
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         let facesRequest = VNDetectFaceCaptureQualityRequest()
         let featureRequest = VNGenerateImageFeaturePrintRequest()
@@ -176,7 +177,7 @@ final class VisionAnalyzer {
         return 0.2126 * red + 0.7152 * green + 0.0722 * blue
     }
 
-    private func edgeSharpness(of image: CGImage) -> Double {
+    func edgeSharpness(of image: CGImage) -> Double {
         let size = 64
         var pixels = [UInt8](repeating: 0, count: size * size)
         guard let context = CGContext(

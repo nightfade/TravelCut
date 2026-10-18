@@ -48,6 +48,7 @@ struct TravelCutSelfTest {
 
         failures.append(contentsOf: TravelCutDiagnostics.recoverySelfTest())
         failures.append(contentsOf: TravelCutDiagnostics.organizationSelfTest())
+        failures.append(contentsOf: TravelCutDiagnostics.photoCullingSelfTest())
         if let sample = ProcessInfo.processInfo.environment["TRAVELCUT_EXPORT_SAMPLE"] {
             // Optional: a real AVFoundation export, only when a sample clip is supplied.
             let semaphore = DispatchSemaphore(value: 0)
