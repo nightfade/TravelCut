@@ -115,7 +115,10 @@ enum PhotoRater {
         return Result(ratings: ratings, order: [best] + others + rejected, best: best)
     }
 
-    static func title(group: Int, rank: Int, size: Int) -> String {
-        size == 1 ? String(format: "组 %04d", group) : String(format: "组 %04d · 第 %d/%d", group, rank, size)
+    /// "组 0042 · 第 1/5 · 父女共读". Always starts with "组 " so the writers recognise their own titles.
+    static func title(group: Int, rank: Int, size: Int, label: String? = nil) -> String {
+        var parts = [size == 1 ? String(format: "组 %04d", group) : String(format: "组 %04d · 第 %d/%d", group, rank, size)]
+        if let label, !label.isEmpty { parts.append(label) }
+        return parts.joined(separator: " · ")
     }
 }

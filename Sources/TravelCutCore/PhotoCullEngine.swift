@@ -246,10 +246,13 @@ public final class PhotoCullEngine: @unchecked Sendable {
                 let rank = (result.order.firstIndex(of: position) ?? position) + 1
                 var keywords = [["TravelCut", "组", String(format: "组 %04d", number)]]
                 if let bestTheme { keywords.append(["TravelCut", "主题", bestTheme.rawValue]) }
+                // Qwen's label describes the whole group, so every member carries it.
+                let label = judgement?.label.flatMap { $0.isEmpty ? nil : $0 }
+                if let label { keywords.append(["TravelCut", "标签", label]) }
                 var outcome = "试运行"
                 let fields = XMPSidecarWriter.Fields(
                     rating: rating,
-                    title: PhotoRater.title(group: number, rank: rank, size: members.count),
+                    title: PhotoRater.title(group: number, rank: rank, size: members.count, label: label),
                     keywords: keywords
                 )
                 if let raw = item.sidecarTarget {

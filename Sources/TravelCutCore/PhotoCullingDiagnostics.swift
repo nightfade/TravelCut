@@ -49,6 +49,7 @@ extension TravelCutDiagnostics {
         expect(allJunk.ratings == [-1, -1] && allJunk.best == nil, "an all-junk group is rejected")
         expect(PhotoRater.title(group: 42, rank: 1, size: 5) == "组 0042 · 第 1/5", "group title")
         expect(PhotoRater.title(group: 7, rank: 1, size: 1) == "组 0007", "single photo title")
+        expect(PhotoRater.title(group: 42, rank: 2, size: 5, label: "父女共读") == "组 0042 · 第 2/5 · 父女共读", "title with Qwen label")
 
         // EXIF dates and eyes.
         if let (date, zone) = PhotoDiscovery.parseExifDate("2026:11:28 10:15:30", subsec: "25", offset: "+01:00") {
