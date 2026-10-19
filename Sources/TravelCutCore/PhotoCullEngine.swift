@@ -396,15 +396,18 @@ public final class PhotoCullEngine: @unchecked Sendable {
         for (number, key) in order.enumerated() {
             let members = spots[key]!
             var result = cache?.geocode(for: key)
-            if result == nil, consecutiveFailures < 3 {
+            if result == nil, consecutiveFailures < 2 {
                 if number % 5 == 0 {
                     progress(ProgressUpdate(fraction: 0.495, message: "正在在线查询地点 \(number + 1)/\(order.count)…"))
                 }
                 let item = items[members[0]]
-                result = await geocoder.lookup(latitude: item.latitude!, longitude: item.longitude!)
+                result = await geocoder.lookup(latitude: item.latitude!, longitude: item.longitude!) {
+                    progress(ProgressUpdate(fraction: 0.495, message: "Apple 限制了查询频率，等待约 1 分钟后继续（\(number + 1)/\(order.count)）…"))
+                }
                 if let result { cache?.store(result, forGeocode: key); consecutiveFailures = 0 } else { consecutiveFailures += 1 }
             }
-            // After three failures in a row (offline, or throttled for good) stop asking; the rest keep offline names.
+            // Each lookup already waited out one throttling window, so two failures in a row mean offline:
+            // stop asking and let the rest keep offline names.
             guard let result else { failures += 1; continue }
             guard let place = OnlinePlaces.merge(offline: known[members[0]], online: result) else { continue }
             for index in members { known[index] = place; refined.insert(index) }

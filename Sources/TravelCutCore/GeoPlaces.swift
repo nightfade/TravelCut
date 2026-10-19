@@ -145,10 +145,17 @@ final class GeoPlaces {
 /// so it is off unless the user turns it on. Points within about 110 m share one request (and one
 /// cache entry); requests are spaced out because Apple rate-limits geocoding, and anything that
 /// fails falls back to the offline result.
+///
+/// Measured 2026-10-19: 50 requests back to back succeed, the 51st fails with kCLErrorNetwork and
+/// an empty userInfo, and requests succeed again about 60 s after the first one. Pacing at 1.2 s
+/// ran 120 requests without a failure. The quota is per app: another process being throttled did not
+/// affect TravelCut's requests.
 final class OnlinePlaces {
     struct Result: Codable { let locality: String?; let landmark: String?; let country: String? }
 
-    static let minimumInterval: TimeInterval = 1.2
+    static let minimumInterval: TimeInterval = 1.25
+    /// Longer than the measured 60 s window, so one retry gets past throttling; failing again means offline.
+    static let throttleWait: TimeInterval = 65
     private let geocoder = CLGeocoder()
     private var lastRequest = Date.distantPast
 
@@ -158,8 +165,8 @@ final class OnlinePlaces {
 
     /// nil means the lookup failed (network, throttling) and is worth retrying on a later run;
     /// an empty Result means Apple has no name for the spot (open sea) and can be cached.
-    func lookup(latitude: Double, longitude: Double) async -> Result? {
-        for attempt in 0..<3 {
+    func lookup(latitude: Double, longitude: Double, onWait: () -> Void = {}) async -> Result? {
+        for attempt in 0..<2 {
             let wait = Self.minimumInterval - Date().timeIntervalSince(lastRequest)
             if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
             lastRequest = Date()
@@ -170,9 +177,10 @@ final class OnlinePlaces {
                 )
                 guard let mark = marks.first else { return Result(locality: nil, landmark: nil, country: nil) }
                 return Result(locality: mark.locality, landmark: mark.areasOfInterest?.first, country: mark.country)
-            } catch let error as CLError where error.code == .network && attempt < 2 {
-                // Throttled: back off and retry.
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            } catch let error as CLError where error.code == .network && attempt == 0 {
+                // Throttling and being offline look the same; wait out the window once to tell them apart.
+                onWait()
+                try? await Task.sleep(nanoseconds: UInt64(Self.throttleWait * 1_000_000_000))
             } catch let error as CLError where error.code == .geocodeFoundNoResult {
                 return Result(locality: nil, landmark: nil, country: nil)
             } catch {
