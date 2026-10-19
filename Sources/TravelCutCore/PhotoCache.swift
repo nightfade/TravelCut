@@ -13,7 +13,7 @@ import Vision
 /// - Bump `analysisVersion` / `qwenVersion` whenever the analysis or the prompt changes.
 final class PhotoCache {
     static let analysisVersion = 1
-    static let qwenVersion = 1
+    static let qwenVersion = 2   // 2: the prompt includes the place
     static let folderName = ".travelcut-cache"
 
     struct Metrics: Codable {
@@ -130,9 +130,9 @@ final class PhotoCache {
         append(AnalysisLine(key: key, metrics: cached), to: analysisHandle)
     }
 
-    static func groupKey(photoKeys: [String], themes: Set<HighlightTheme>) -> String {
+    static func groupKey(photoKeys: [String], themes: Set<HighlightTheme>, place: String? = nil) -> String {
         let themeList = HighlightTheme.allCases.filter(themes.contains).map(\.rawValue).joined(separator: ",")
-        return themeList + "#" + photoKeys.joined(separator: "#")
+        return themeList + "@" + (place ?? "") + "#" + photoKeys.joined(separator: "#")
     }
 
     func judgement(for key: String) -> PhotoGroupJudgement? { judgements[key] }

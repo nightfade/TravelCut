@@ -1,0 +1,7 @@
+GeoNames cities500
+
+Place names and coordinates from GeoNames (https://www.geonames.org), licensed under
+Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/).
+The data is not distributed with TravelCut; it is downloaded from
+https://download.geonames.org/export/dump/cities500.zip the first time a photo with GPS
+is processed, and kept in ~/Library/Application Support/TravelCut/Geo/.

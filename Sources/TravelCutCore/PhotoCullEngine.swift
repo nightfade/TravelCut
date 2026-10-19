@@ -145,6 +145,21 @@ public final class PhotoCullEngine: @unchecked Sendable {
             featuresURL = url
         }
 
+        // Places: GPS from the camera, else borrowed from the nearest geotagged photo in time.
+        var places = [(Place, PlaceInference.Source)?](repeating: nil, count: items.count)
+        if items.contains(where: { $0.latitude != nil }) {
+            do {
+                let geo = try GeoPlaces.load { message in progress(ProgressUpdate(fraction: 0.495, message: message)) }
+                let known = items.map { item in
+                    item.latitude.flatMap { lat in item.longitude.flatMap { geo.place(latitude: lat, longitude: $0) } }
+                }
+                places = PlaceInference.infer(times: items.map(\.capturedAt), known: known)
+            } catch {
+                // Place names are a bonus; never fail the run over them.
+                TravelCutLog.write(Data("地点查询不可用：\(error.localizedDescription)\n".utf8))
+            }
+        }
+
         var judgements = [PhotoGroupJudgement?](repeating: nil, count: groups.count)
         var qwenFailures = 0
         if configuration.useQwen {
@@ -179,8 +194,10 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     .filter { metrics[members[$0]].map { !$0.isJunk } ?? false }
                     .sorted { (metrics[members[$0]]?.pickScore ?? 0) > (metrics[members[$1]]?.pickScore ?? 0) }
                     .prefix(3))
+                let groupPlace = candidates.first.flatMap { places[members[$0]]?.0.text }
                 let groupKey = PhotoCache.groupKey(
-                    photoKeys: candidates.map { photoKeys[members[$0]] }, themes: configuration.selectedThemes
+                    photoKeys: candidates.map { photoKeys[members[$0]] }, themes: configuration.selectedThemes,
+                    place: groupPlace
                 )
                 if candidates.count >= 2, let cached = cache?.judgement(for: groupKey) {
                     judgements[groupIndex] = cached
@@ -198,7 +215,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
                         attempts += 1
                         do {
                             let result = try await qwen.judgePhotoGroup(
-                                images: files, selectedThemes: configuration.selectedThemes
+                                images: files, selectedThemes: configuration.selectedThemes, place: groupPlace
                             )
                             let judgement = PhotoGroupJudgement(
                                 bestMember: result.bestMember.map { candidates[$0] },
@@ -249,6 +266,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
                 // Qwen's label describes the whole group, so every member carries it.
                 let label = judgement?.label.flatMap { $0.isEmpty ? nil : $0 }
                 if let label { keywords.append(["TravelCut", "标签", label]) }
+                if let place = places[index]?.0 { keywords.append(place.keywordPath) }
                 var outcome = "试运行"
                 let fields = XMPSidecarWriter.Fields(
                     rating: rating,
@@ -289,6 +307,8 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     aesthetic: m.map { ($0.aesthetic * 1000).rounded() / 1000 },
                     utility: m?.isUtility,
                     clipLabel: m?.semanticLabel,
+                    place: places[index]?.0.text,
+                    placeSource: places[index]?.1.rawValue,
                     previewSize: m?.previewSize,
                     visionFailed: m?.visionFailed
                 ))
@@ -360,6 +380,8 @@ struct PhotoCullReport: Codable {
         let aesthetic: Double?
         let utility: Bool?
         let clipLabel: String?
+        let place: String?
+        let placeSource: String?
         let previewSize: Int?
         let visionFailed: Bool?
     }

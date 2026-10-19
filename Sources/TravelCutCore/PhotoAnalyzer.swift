@@ -17,6 +17,8 @@ struct PhotoItem: Sendable {
     }
     let capturedAt: Date
     let timeZone: TimeZone
+    var latitude: Double? = nil    // from EXIF GPS, e.g. written by the camera's Bluetooth location sync
+    var longitude: Double? = nil
 }
 
 enum PhotoDiscovery {
@@ -53,7 +55,9 @@ enum PhotoDiscovery {
             guard let primary = raw ?? rendered else { continue }
             let (date, zone) = captureDate(of: primary) ?? rendered.flatMap(captureDate(of:))
                 ?? (fileDate(primary), .current)
-            items.append(PhotoItem(primary: primary, sidecarTarget: raw, capturedAt: date, timeZone: zone))
+            let gps = coordinate(of: primary) ?? rendered.flatMap(coordinate(of:))
+            items.append(PhotoItem(primary: primary, sidecarTarget: raw, capturedAt: date, timeZone: zone,
+                                   latitude: gps?.0, longitude: gps?.1))
         }
         return items.sorted {
             $0.capturedAt != $1.capturedAt
@@ -72,6 +76,21 @@ enum PhotoDiscovery {
         let offset = exif["OffsetTimeOriginal" as CFString] as? String
         let subsec = exif[kCGImagePropertyExifSubsecTimeOriginal] as? String
         return parseExifDate(original, subsec: subsec, offset: offset)
+    }
+
+    static func coordinate(of url: URL) -> (Double, Double)? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any],
+              let lat = (gps[kCGImagePropertyGPSLatitude] as? NSNumber)?.doubleValue,
+              let lon = (gps[kCGImagePropertyGPSLongitude] as? NSNumber)?.doubleValue
+        else { return nil }
+        let south = (gps[kCGImagePropertyGPSLatitudeRef] as? String) == "S"
+        let west = (gps[kCGImagePropertyGPSLongitudeRef] as? String) == "W"
+        let latitude = south ? -lat : lat, longitude = west ? -lon : lon
+        // Some cameras write 0/0 when they had no fix.
+        guard !(latitude == 0 && longitude == 0), abs(latitude) <= 90, abs(longitude) <= 180 else { return nil }
+        return (latitude, longitude)
     }
 
     static func parseExifDate(_ value: String, subsec: String?, offset: String?) -> (Date, TimeZone)? {

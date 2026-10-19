@@ -118,7 +118,8 @@ actor QwenVideoAnalyzer {
     /// Picks the best of a few near-identical photos and judges whether the group is worth keeping.
     func judgePhotoGroup(
         images: [URL],
-        selectedThemes: Set<HighlightTheme>
+        selectedThemes: Set<HighlightTheme>,
+        place: String? = nil
     ) async throws -> PhotoGroupJudgement {
         guard let modelDirectory else {
             throw TravelCutError.modelUnavailable("模型尚未安装")
@@ -126,7 +127,7 @@ actor QwenVideoAnalyzer {
         let orderedThemes = HighlightTheme.allCases.filter(selectedThemes.contains)
         let count = images.count
         let prompt = """
-        你是旅行摄影的选片编辑。以下 \(count) 张照片按顺序编号为 1 到 \(count)，是同一场景连拍或接连拍下的。
+        你是旅行摄影的选片编辑。以下 \(count) 张照片按顺序编号为 1 到 \(count)，是同一场景连拍或接连拍下的。\(place.map { "拍摄地点在\($0)，label 里如果能认出具体的地标或场所，请用它的名字。" } ?? "")
         用户想保留的内容：\(orderedThemes.map(\.qwenGuidance).joined(separator: "；"))。
         best 填最值得保留的那一张的编号：优先主体清晰对焦、人物没有闭眼且表情自然、构图完整、曝光可用。
         keep 判断这组照片是否值得作为这次旅行的照片保留；清晰且有记录价值的日常旅途画面也应保留，只有明显无内容、

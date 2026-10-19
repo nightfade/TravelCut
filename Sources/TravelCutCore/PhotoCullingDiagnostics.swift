@@ -91,6 +91,7 @@ extension TravelCutDiagnostics {
         expect(!args.contains { $0.contains("巴黎") }, "user keywords are untouched")
         expect(args.contains("-XMP-lr:HierarchicalSubject+=TravelCut|写入星级|2"), "new ownership marker")
 
+        failures += placeSelfTest()
         failures += cacheSelfTest()
         failures += previewSelfTest()
         failures += xmpSelfTest()
@@ -296,6 +297,71 @@ extension TravelCutDiagnostics {
         )
         reopened.store(failed, for: "Day/B.JPG|1")
         if reopened.metrics(for: "Day/B.JPG|1") != nil { failures.append("cache: photos whose Vision analysis failed are not cached") }
+        return failures
+    }
+
+    private static func placeSelfTest() -> [String] {
+        var failures: [String] = []
+        func expect(_ condition: Bool, _ message: String) { if !condition { failures.append("place: " + message) } }
+
+        // GeoNames lines: id, name, ascii, alternates, lat, lon, class, code, country, cc2, a1..a4, population.
+        func line(_ name: String, _ alt: String, _ lat: Double, _ lon: Double, _ code: String, _ cc: String, _ pop: Int) -> String {
+            ["1", name, name, alt, "\(lat)", "\(lon)", "P", code, cc, "", "", "", "", "", "\(pop)"].joined(separator: "\t")
+        }
+        let text = [
+            line("Prague", "Praha,プラハ,布拉格", 50.088, 14.420, "PPLC", "CZ", 1_300_000),
+            line("Praha 1", "布拉格1区", 50.087, 14.421, "PPLX", "CZ", 30_000),
+            line("Tiny", "", 50.090, 14.425, "PPL", "CZ", 600),
+            line("Stranda", "Stranden", 62.309, 6.937, "PPL", "NO", 2969),
+            line("Versailles", "凡尔赛", 48.804, 2.135, "PPL", "FR", 85_000),
+            line("Saint-Quentin-en-Yvelines", "", 48.773, 2.044, "PPL", "FR", 230_000),
+        ].joined(separator: "\n")
+        let entries = (try? GeoPlaces.parse(text)) ?? []
+        expect(entries.count == 5, "city sections (PPLX) are skipped, got \(entries.count)")
+        expect(entries.first?.chineseName == "布拉格", "Chinese name picked over Japanese katakana")
+        let geo = GeoPlaces(entries: entries)
+        let prague = geo.place(latitude: 50.089, longitude: 14.424)
+        expect(prague?.city == "布拉格" && prague?.country == "捷克", "most populous place nearby wins, got \(String(describing: prague))")
+        let geiranger = geo.place(latitude: 62.101, longitude: 7.206)   // ~27 km from Stranda, no closer town
+        expect(geiranger?.city == "Stranda", "nearest town within 50 km when nothing is within 10 km, got \(String(describing: geiranger))")
+        expect(geo.place(latitude: 0, longitude: -160) == nil, "no place far from any town")
+        let versailles = geo.place(latitude: 48.8049, longitude: 2.1204)
+        expect(versailles?.city == "凡尔赛", "a close town beats a bigger one 8 km away, got \(String(describing: versailles))")
+
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let oslo = Place(countryCode: "NO", country: "挪威", city: "奥斯陆")
+        let bergen = Place(countryCode: "NO", country: "挪威", city: "卑尔根")
+        let times = [0, 600, 1000, 1200, 7200].map { base.addingTimeInterval(TimeInterval($0)) }
+        let known: [Place?] = [oslo, nil, nil, bergen, nil]
+        let inferred = PlaceInference.infer(times: times, known: known)
+        expect(inferred[0]?.0 == oslo && inferred[0]?.1 == .gps, "own GPS is kept")
+        expect(inferred[1]?.0 == oslo && inferred[1]?.1 == .inferred, "nearer neighbour in time wins (10 min vs 10 min after 0 → oslo)")
+        expect(inferred[2]?.0 == bergen, "nearer neighbour in time wins (bergen 200 s away)")
+        expect(inferred[4] == nil, "nothing within 30 minutes → no place")
+
+        // GPS in EXIF: south and west are negative; 0/0 means no fix.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("TravelCut-gps-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func jpeg(_ name: String, _ gps: [CFString: Any]) -> URL? {
+            let url = folder.appendingPathComponent(name)
+            guard let context = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0,
+                    space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue),
+                  let image = context.makeImage(),
+                  let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
+            else { return nil }
+            CGImageDestinationAddImage(destination, image, [kCGImagePropertyGPSDictionary: gps] as CFDictionary)
+            return CGImageDestinationFinalize(destination) ? url : nil
+        }
+        if let rio = jpeg("rio.jpg", [kCGImagePropertyGPSLatitude: 22.9, kCGImagePropertyGPSLatitudeRef: "S",
+                                      kCGImagePropertyGPSLongitude: 43.2, kCGImagePropertyGPSLongitudeRef: "W"]) {
+            let c = PhotoDiscovery.coordinate(of: rio)
+            expect(c.map { abs($0.0 + 22.9) < 0.001 && abs($0.1 + 43.2) < 0.001 } ?? false, "S/W coordinates are negative, got \(String(describing: c))")
+        }
+        if let none = jpeg("nofix.jpg", [kCGImagePropertyGPSLatitude: 0, kCGImagePropertyGPSLatitudeRef: "N",
+                                         kCGImagePropertyGPSLongitude: 0, kCGImagePropertyGPSLongitudeRef: "E"]) {
+            expect(PhotoDiscovery.coordinate(of: none) == nil, "0/0 is treated as no fix")
+        }
         return failures
     }
 }
