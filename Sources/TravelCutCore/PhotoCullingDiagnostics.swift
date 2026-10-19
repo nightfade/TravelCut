@@ -90,6 +90,7 @@ extension TravelCutDiagnostics {
         expect(!args.contains { $0.contains("巴黎") }, "user keywords are untouched")
         expect(args.contains("-XMP-lr:HierarchicalSubject+=TravelCut|写入星级|2"), "new ownership marker")
 
+        failures += cacheSelfTest()
         failures += previewSelfTest()
         failures += xmpSelfTest()
         return failures
@@ -251,5 +252,49 @@ extension TravelCutDiagnostics {
         let input = CIImage(cgImage: image)
         let output = input.clampedToExtent().applyingGaussianBlur(sigma: 40).cropped(to: input.extent)
         return CIContext().createCGImage(output, from: input.extent)
+    }
+
+    /// The cache must round-trip metrics exactly and survive a partial last line.
+    private static func cacheSelfTest() -> [String] {
+        var failures: [String] = []
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("TravelCut-cache-test-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let embedding: [Float] = (0..<512).map { Float($0) / 1000 - 0.25 }
+        let metrics = PhotoMetrics(
+            aesthetic: 0.7, sharpness: 0.4, faceSharpness: 0.5, faceQuality: 0.6, eyesClosed: true, brightness: 0.45,
+            isUtility: false, semanticLabel: nil, theme: nil, featurePrint: nil, previewSize: 1024,
+            embedding: embedding, visionFailed: false
+        )
+        let item = PhotoItem(primary: root.appendingPathComponent("Day/A.JPG"), sidecarTarget: nil,
+                             capturedAt: Date(timeIntervalSince1970: 1_800_000_000.25), timeZone: .current)
+        guard let cache = PhotoCache(root: root) else { return ["cache: cannot create"] }
+        let key = cache.key(for: item)
+        if key != "Day/A.JPG|1800000000.25" { failures.append("cache: key is relative path + capture time, got \(key)") }
+        cache.store(metrics, for: key)
+        let judgement = PhotoGroupJudgement(bestMember: 1, keep: true, highlightScore: 0.7, theme: .nature, label: "湖", reason: nil)
+        let groupKey = PhotoCache.groupKey(photoKeys: [key], themes: [.nature, .people])
+        cache.store(judgement, for: groupKey)
+
+        // Simulate a killed run, then reopen.
+        let file = root.appendingPathComponent(".travelcut-cache/analysis-v\(PhotoCache.analysisVersion).jsonl")
+        if let handle = try? FileHandle(forWritingTo: file) { _ = try? handle.seekToEnd(); try? handle.write(contentsOf: Data("{\"key\":\"half".utf8)); try? handle.close() }
+        guard let reopened = PhotoCache(root: root) else { return failures + ["cache: cannot reopen"] }
+        guard let back = reopened.metrics(for: key) else { return failures + ["cache: stored metrics missing after reopen"] }
+        if back.embedding != embedding { failures.append("cache: embedding does not round-trip") }
+        if back.aesthetic != 0.7 || back.faceSharpness != 0.5 || back.eyesClosed != true || back.previewSize != 1024 {
+            failures.append("cache: metrics do not round-trip")
+        }
+        if reopened.judgement(for: groupKey)?.label != "湖" { failures.append("cache: judgement does not round-trip") }
+        if reopened.judgement(for: PhotoCache.groupKey(photoKeys: [key], themes: [.nature])) != nil {
+            failures.append("cache: changing themes must miss the Qwen cache")
+        }
+        let failed = PhotoMetrics(
+            aesthetic: 0.5, sharpness: 0.4, faceSharpness: nil, faceQuality: 0, eyesClosed: false, brightness: 0.5,
+            isUtility: false, semanticLabel: nil, theme: nil, featurePrint: nil, previewSize: 1024, embedding: nil, visionFailed: true
+        )
+        reopened.store(failed, for: "Day/B.JPG|1")
+        if reopened.metrics(for: "Day/B.JPG|1") != nil { failures.append("cache: photos whose Vision analysis failed are not cached") }
+        return failures
     }
 }

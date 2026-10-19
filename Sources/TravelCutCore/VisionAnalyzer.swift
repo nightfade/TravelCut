@@ -27,6 +27,10 @@ final class VisionAnalyzer {
         semanticAnalyzer = try? MobileCLIPAnalyzer(selectedThemes: selectedThemes)
     }
 
+    func semantic(forEmbedding embedding: [Float]) -> SemanticAnalysis? {
+        semanticAnalyzer?.classify(embedding)
+    }
+
     var fastModelName: String? {
         semanticAnalyzer == nil ? nil : MobileCLIPAnalyzer.modelName
     }

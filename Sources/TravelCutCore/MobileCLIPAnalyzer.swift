@@ -67,7 +67,12 @@ final class MobileCLIPAnalyzer {
         guard let output = prediction.featureValue(for: "final_emb_1")?.multiArrayValue else {
             throw TravelCutError.invalidArguments("MobileCLIP image output is unavailable")
         }
-        let imageEmbedding = Self.values(output)
+        return classify(Self.values(output))
+    }
+
+    /// Scores an image embedding against the current prompts. Cheap, so cached embeddings can be
+    /// re-scored when the selected themes change.
+    func classify(_ imageEmbedding: [Float]) -> SemanticAnalysis {
         let scored = prompts.map { ($0, Self.cosine(imageEmbedding, $0.embedding)) }
         let bestPositive = scored.filter { $0.0.positive }.max { $0.1 < $1.1 }
         let bestNegative = scored.filter { !$0.0.positive }.max { $0.1 < $1.1 }

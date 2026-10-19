@@ -64,17 +64,29 @@ public final class PhotoCullEngine: @unchecked Sendable {
         }
 
         let analyzer = PhotoAnalyzer(selectedThemes: configuration.selectedThemes)
+        let cache = PhotoCache(root: configuration.inputFolder)
+        let photoKeys = items.map { cache?.key(for: $0) ?? $0.primary.path }
         var metrics: [PhotoMetrics?] = []
+        var reused = 0
         metrics.reserveCapacity(items.count)
         for (index, item) in items.enumerated() {
             try Task.checkCancellation()
-            // Drain autoreleased image buffers every photo. Without this, a 9,000-photo run exhausted
-            // IOSurface memory after about 5,000 photos and every later Vision request failed silently.
-            metrics.append(autoreleasepool { PhotoDiscovery.preview(of: item.primary).map(analyzer.analyze) })
+            if let cached = cache?.metrics(for: photoKeys[index]) {
+                metrics.append(analyzer.metrics(from: cached))
+                reused += 1
+            } else {
+                // Drain autoreleased image buffers every photo. Without this, a 9,000-photo run exhausted
+                // IOSurface memory after about 5,000 photos and every later Vision request failed silently.
+                let fresh = autoreleasepool { PhotoDiscovery.preview(of: item.primary).map(analyzer.analyze) }
+                if let fresh { cache?.store(fresh, for: photoKeys[index]) }
+                metrics.append(fresh)
+            }
             if index % 10 == 0 || index == items.count - 1 {
                 progress(ProgressUpdate(
                     fraction: 0.03 + 0.45 * Double(index + 1) / Double(items.count),
-                    message: "正在分析照片 \(index + 1)/\(items.count)…"
+                    message: reused > 0
+                        ? "正在分析照片 \(index + 1)/\(items.count)（\(reused) 张用上次的结果）…"
+                        : "正在分析照片 \(index + 1)/\(items.count)…"
                 ))
             }
         }
@@ -153,7 +165,12 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     .filter { metrics[members[$0]].map { !$0.isJunk } ?? false }
                     .sorted { (metrics[members[$0]]?.pickScore ?? 0) > (metrics[members[$1]]?.pickScore ?? 0) }
                     .prefix(3))
-                if candidates.count >= 2 {
+                let groupKey = PhotoCache.groupKey(
+                    photoKeys: candidates.map { photoKeys[members[$0]] }, themes: configuration.selectedThemes
+                )
+                if candidates.count >= 2, let cached = cache?.judgement(for: groupKey) {
+                    judgements[groupIndex] = cached
+                } else if candidates.count >= 2 {
                     var files: [URL] = []
                     for (position, member) in candidates.enumerated() {
                         let url = temporary.appendingPathComponent("g\(groupIndex)-\(position + 1).jpg")
@@ -169,7 +186,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
                             let result = try await qwen.judgePhotoGroup(
                                 images: files, selectedThemes: configuration.selectedThemes
                             )
-                            judgements[groupIndex] = PhotoGroupJudgement(
+                            let judgement = PhotoGroupJudgement(
                                 bestMember: result.bestMember.map { candidates[$0] },
                                 keep: result.keep,
                                 highlightScore: result.highlightScore,
@@ -177,6 +194,8 @@ public final class PhotoCullEngine: @unchecked Sendable {
                                 label: result.label,
                                 reason: result.reason
                             )
+                            judgements[groupIndex] = judgement
+                            cache?.store(judgement, for: groupKey)
                         } catch {
                             failures += 1
                             lastError = error

@@ -169,6 +169,28 @@ final class PhotoAnalyzer {
 
     var hasSemanticModel: Bool { vision.fastModelName != nil }
 
+    /// Rebuilds metrics from the cache, re-scoring the stored embedding against the current themes.
+    func metrics(from cached: PhotoCache.Metrics) -> PhotoMetrics {
+        let semantic = cached.embedding.flatMap { vision.semantic(forEmbedding: $0) }
+        return PhotoMetrics(
+            aesthetic: cached.aesthetic,
+            sharpness: cached.sharpness,
+            faceSharpness: cached.faceSharpness,
+            faceQuality: cached.faceQuality,
+            eyesClosed: cached.eyesClosed,
+            brightness: cached.brightness,
+            isUtility: cached.isUtility,
+            semanticLabel: semantic?.label,
+            theme: semantic?.theme,
+            featurePrint: cached.featurePrint.flatMap {
+                try? NSKeyedUnarchiver.unarchivedObject(ofClass: VNFeaturePrintObservation.self, from: $0)
+            },
+            previewSize: cached.previewSize,
+            embedding: cached.embedding,
+            visionFailed: false
+        )
+    }
+
     func analyze(_ image: CGImage) -> PhotoMetrics {
         let failuresBefore = vision.failureCount
         let frame = vision.analyzeFrame(image)
