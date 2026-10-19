@@ -149,7 +149,7 @@ actor QwenVideoAnalyzer {
                 "-c", "8192",
                 "--cache-type-k", "q8_0",
                 "--cache-type-v", "q8_0",
-                "--image-max-tokens", "512",
+                "--image-max-tokens", "384",
                 "--gpu-layers", "all",
                 "--fit", "on",
                 "--fit-target", "2048",

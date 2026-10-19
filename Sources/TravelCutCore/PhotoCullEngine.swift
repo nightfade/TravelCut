@@ -98,6 +98,27 @@ public final class PhotoCullEngine: @unchecked Sendable {
             return distance
         }
 
+        var featuresURL: URL?
+        if ProcessInfo.processInfo.environment["TRAVELCUT_EXPORT_FEATURES"] == "1" {
+            // MobileCLIP image embeddings, for checking whether the user's taste can be learned.
+            // Written before Qwen runs, so a long run that gets stopped still leaves the features.
+            let url = configuration.inputFolder.appendingPathComponent("TravelCut 照片特征.json")
+            var rows: [[String: Any]] = []
+            for (groupIndex, members) in groups.enumerated() {
+                for index in members {
+                    guard let embedding = metrics[index]?.embedding else { continue }
+                    rows.append([
+                        "file": items[index].primary.path,
+                        "group": groupIndex + 1,
+                        "face": metrics[index]?.faceSharpness != nil,
+                        "embedding": embedding.map { (Double($0) * 10_000).rounded() / 10_000 },
+                    ])
+                }
+            }
+            try JSONSerialization.data(withJSONObject: rows).write(to: url, options: .atomic)
+            featuresURL = url
+        }
+
         var judgements = [PhotoGroupJudgement?](repeating: nil, count: groups.count)
         var qwenFailures = 0
         if configuration.useQwen {
@@ -115,6 +136,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
             defer { try? FileManager.default.removeItem(at: temporary) }
 
             var failures = 0
+            var attempts = 0
             var lastError: Error?
             for (groupIndex, members) in groups.enumerated() {
                 try Task.checkCancellation()
@@ -123,13 +145,15 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     fraction: 0.54 + 0.42 * Double(groupIndex) / Double(groups.count),
                     message: "Qwen 正在挑选第 \(groupIndex + 1)/\(groups.count) 组…"
                 ))
-                // Up to four of the technically best usable frames, best first: if the model leans
-                // towards the first image, it leans towards the technical pick.
+                // Up to three of the technically best usable frames, best first: if the model leans
+                // towards the first image, it leans towards the technical pick. Groups with a single
+                // usable frame are skipped: there is nothing to choose, and on a 9,000-photo trip they
+                // were two thirds of all calls. MobileCLIP supplies their theme.
                 let candidates = Array(members.indices
                     .filter { metrics[members[$0]].map { !$0.isJunk } ?? false }
                     .sorted { (metrics[members[$0]]?.pickScore ?? 0) > (metrics[members[$1]]?.pickScore ?? 0) }
-                    .prefix(4))
-                if !candidates.isEmpty {
+                    .prefix(3))
+                if candidates.count >= 2 {
                     var files: [URL] = []
                     for (position, member) in candidates.enumerated() {
                         let url = temporary.appendingPathComponent("g\(groupIndex)-\(position + 1).jpg")
@@ -140,6 +164,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
                         if written { files.append(url) }
                     }
                     if files.count == candidates.count {
+                        attempts += 1
                         do {
                             let result = try await qwen.judgePhotoGroup(
                                 images: files, selectedThemes: configuration.selectedThemes
@@ -160,7 +185,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     files.forEach { try? FileManager.default.removeItem(at: $0) }
                 }
             }
-            if failures == groups.count, let lastError { throw lastError }
+            if attempts > 0, failures == attempts, let lastError { throw lastError }
             qwenFailures = failures
         }
 
@@ -252,26 +277,6 @@ public final class PhotoCullEngine: @unchecked Sendable {
                     report[groupIndex].photos[photoIndex].outcome = text
                 }
             }
-        }
-
-        var featuresURL: URL?
-        if ProcessInfo.processInfo.environment["TRAVELCUT_EXPORT_FEATURES"] == "1" {
-            // MobileCLIP image embeddings, for checking whether the user's taste can be learned.
-            let url = configuration.inputFolder.appendingPathComponent("TravelCut 照片特征.json")
-            var rows: [[String: Any]] = []
-            for (groupIndex, members) in groups.enumerated() {
-                for index in members {
-                    guard let embedding = metrics[index]?.embedding else { continue }
-                    rows.append([
-                        "file": items[index].primary.path,
-                        "group": groupIndex + 1,
-                        "face": metrics[index]?.faceSharpness != nil,
-                        "embedding": embedding.map { (Double($0) * 10_000).rounded() / 10_000 },
-                    ])
-                }
-            }
-            try JSONSerialization.data(withJSONObject: rows).write(to: url, options: .atomic)
-            featuresURL = url
         }
 
         let reportURL = configuration.inputFolder.appendingPathComponent(Self.reportName)

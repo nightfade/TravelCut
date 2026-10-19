@@ -107,10 +107,11 @@ struct ContentView: View {
                         Label("每天一个文件夹，按拍摄时间编号，文件名带主题和内容标签", systemImage: "text.badge.checkmark")
                     } else {
                         Label("同一文件夹里连续拍的相似照片分成一组，按拍摄时间排序时组员挨在一起", systemImage: "square.stack.3d.up")
-                        Label("Qwen3-VL-4B 从每组技术最好的几张里挑一张，并判断值不值得留", systemImage: "brain.head.profile")
+                        Label("可选：Qwen3-VL-4B 在多张的组里挑一张并写标签；不开时按技术分挑选，主题由 MobileCLIP 判断", systemImage: "brain.head.profile")
                         Label("每组最佳 3 星，接近的备选 2 星，全黑、全白和严重失焦标为拒绝", systemImage: "star.leadinghalf.filled")
                         Label("标题写「组 0042 · 第 1/5」，关键字写组号和主题", systemImage: "text.badge.checkmark")
                         Label("不改像素，不覆盖你已有的星级、颜色标签和 Camera Raw 调整", systemImage: "checkmark.shield")
+                        Toggle("用 Qwen 挑选和写标签（照片多时要好几个小时）", isOn: $model.photoUseQwen)
                         Toggle("试运行：只生成报告，不写入星级", isOn: $model.photoDryRun)
                     }
                 }
@@ -177,6 +178,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var photoDryRun = false
+    @Published var photoUseQwen = false
 
     @Published var inputFolder: URL?
     @Published var isRunning = false
@@ -279,7 +281,7 @@ final class AppModel: ObservableObject {
         let configuration = PhotoCullConfiguration(
             inputFolder: inputFolder,
             selectedThemes: selectedThemes,
-            useQwen: true,
+            useQwen: photoUseQwen,
             writeRatings: !photoDryRun
         )
         isRunning = true
