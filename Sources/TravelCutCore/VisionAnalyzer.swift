@@ -238,8 +238,8 @@ final class VisionAnalyzer {
             for request in requests { request.usesCPUOnly = true }
             if (try? handler.perform(requests)) != nil { return }
             failureCount += 1
-            if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
-                FileHandle.standardError.write(Data("Vision \(name) unavailable: \(error.localizedDescription)\n".utf8))
+            if TravelCutLog.isEnabled {
+                TravelCutLog.write(Data("Vision \(name) unavailable: \(error.localizedDescription)\n".utf8))
             }
         }
     }

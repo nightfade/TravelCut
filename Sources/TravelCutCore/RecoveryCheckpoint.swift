@@ -231,9 +231,9 @@ enum SelectionCheckpointStore {
             try? FileManager.default.attributesOfFileSystem(forPath: outputFolder.path)
         )?[.systemFreeSize].flatMap { ($0 as? NSNumber)?.int64Value }
 
-        if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
+        if TravelCutLog.isEnabled {
             let detail = "DISK standard=\(standardCapacity ?? -1) filesystem=\(fileSystemCapacity ?? -1) important=\(importantCapacity ?? -1)\n"
-            FileHandle.standardError.write(Data(detail.utf8))
+            TravelCutLog.write(Data(detail.utf8))
         }
 
         return preferredAvailableCapacity(

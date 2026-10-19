@@ -93,6 +93,8 @@ struct TravelCutCLI {
         var themes = HighlightTheme.defaultSelection
         var useQwen = true
         var write = true
+        var exportFeatures = false
+        var debugLog = false
         var index = 1
         let arguments = CommandLine.arguments
         while index < arguments.count {
@@ -110,6 +112,8 @@ struct TravelCutCLI {
                 }
             case "--fast-only": useQwen = false
             case "--dry-run": write = false
+            case "--export-features": exportFeatures = true
+            case "--debug-log": debugLog = true
             default:
                 FileHandle.standardError.write(Data("错误：未知参数 \(arguments[index])\n".utf8))
                 Foundation.exit(1)
@@ -122,7 +126,8 @@ struct TravelCutCLI {
         }
         do {
             let summary = try await PhotoCullEngine().run(configuration: PhotoCullConfiguration(
-                inputFolder: input, selectedThemes: themes, useQwen: useQwen, writeRatings: write
+                inputFolder: input, selectedThemes: themes, useQwen: useQwen, writeRatings: write,
+                exportFeatures: exportFeatures, debugLog: debugLog
             )) { update in
                 FileHandle.standardError.write(Data("[\(Int(update.fraction * 100))%] \(update.message)\n".utf8))
             }
@@ -150,6 +155,7 @@ struct TravelCutCLI {
 
           照片精选（星级写入 RAW 旁边的 .xmp，Bridge 可读）：
           travelcut-cli --photos --input <照片根目录> [--themes …] [--fast-only] [--dry-run]
+                        [--export-features] [--debug-log]
 
           可用标签：\(themeNames)
         """)

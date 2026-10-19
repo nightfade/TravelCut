@@ -109,8 +109,8 @@ actor QwenVideoAnalyzer {
                 "--log-verbosity", "1",
             ]
         )
-        if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
-            FileHandle.standardError.write(Data("QWEN RAW:\n\(output)\n".utf8))
+        if TravelCutLog.isEnabled {
+            TravelCutLog.write(Data("QWEN RAW:\n\(output)\n".utf8))
         }
         return try parse(output, duration: candidate.duration, allowedThemes: orderedThemes)
     }
@@ -159,8 +159,8 @@ actor QwenVideoAnalyzer {
             ],
             timeout: 180
         )
-        if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
-            FileHandle.standardError.write(Data("QWEN PHOTO RAW:\n\(output)\n".utf8))
+        if TravelCutLog.isEnabled {
+            TravelCutLog.write(Data("QWEN PHOTO RAW:\n\(output)\n".utf8))
         }
         guard let first = output.firstIndex(of: "{"), let last = output.lastIndex(of: "}"), first <= last,
               let data = String(output[first...last]).data(using: .utf8),

@@ -69,12 +69,12 @@ TravelCut 高光片段/
 - 已有的 Camera Raw 调整和其他元数据原样保留
 - 重复运行会更新 TravelCut 上次写的值；你手动改过星级的照片，之后不再改动
 
-每次运行都会在根文件夹生成「TravelCut 照片精选报告.json」，列出每组的照片、星级、Qwen 的判断和每张的诊断数据。勾选「试运行」时只生成报告，不写任何星级。用 `TRAVELCUT_EXPORT_FEATURES=1` 启动时，还会导出「TravelCut 照片特征.json」（每张照片的 MobileCLIP 画面特征），用于学习个人口味的实验。
+每次运行都会在根文件夹生成「TravelCut 照片精选报告.json」，列出每组的照片、星级、Qwen 的判断和每张的诊断数据。勾选「试运行」时只生成报告，不写任何星级。打开「导出画面特征」时，还会导出「TravelCut 照片特征.json」（每张照片的 MobileCLIP 画面特征），用于学习个人口味的实验；打开「保存调试日志」时，会写「TravelCut 调试日志.txt」，记录分组距离、Qwen 原始输出和分析失败的原因。两个文件都在照片根目录。命令行对应 `--export-features` 和 `--debug-log`，原来的环境变量 `TRAVELCUT_EXPORT_FEATURES=1`、`TRAVELCUT_DEBUG=1` 也仍然有效。
 
 命令行：
 
 ```bash
-travelcut-cli --photos --input "/path/to/photos" [--dry-run] [--fast-only] [--themes "自然景观,人物互动"]
+travelcut-cli --photos --input "/path/to/photos" [--dry-run] [--fast-only] [--themes "自然景观,人物互动"] [--export-features] [--debug-log]
 ```
 
 不开 Qwen 时，9,000 张照片大约半小时到一小时。命令行用 `--fast-only` 关闭 Qwen。

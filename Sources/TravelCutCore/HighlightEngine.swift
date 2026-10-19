@@ -64,7 +64,7 @@ public final class HighlightEngine: @unchecked Sendable {
             let source = sources[plan.sourceIndex]
             if let candidate = autoreleasepool(invoking: { try? fastAnalyzer.analyze(plan: plan, source: source) }) {
                 fastCandidates.append(candidate)
-                if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
+                if TravelCutLog.isEnabled {
                     let detail = String(
                         format: "FAST %@ %.2f-%.2f score=%.3f technical=%.3f semantic=%.3f label=%@ utility=%@\n",
                         source.url.lastPathComponent,
@@ -76,7 +76,7 @@ public final class HighlightEngine: @unchecked Sendable {
                         candidate.semanticLabel,
                         candidate.isUtilityImage ? "yes" : "no"
                     )
-                    FileHandle.standardError.write(Data(detail.utf8))
+                    TravelCutLog.write(Data(detail.utf8))
                 }
             }
             let fraction = 0.18 + 0.30 * Double(index + 1) / Double(max(1, plans.count))

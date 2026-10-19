@@ -113,6 +113,8 @@ struct ContentView: View {
                         Label("不改像素，不覆盖你已有的星级、颜色标签和 Camera Raw 调整", systemImage: "checkmark.shield")
                         Toggle("用 Qwen 挑选和写标签（照片多时要好几个小时）", isOn: $model.photoUseQwen)
                         Toggle("试运行：只生成报告，不写入星级", isOn: $model.photoDryRun)
+                        Toggle("导出画面特征（用于学习口味）", isOn: $model.photoExportFeatures)
+                        Toggle("保存调试日志", isOn: $model.photoDebugLog)
                     }
                 }
                 .font(.callout)
@@ -179,6 +181,12 @@ final class AppModel: ObservableObject {
     }
     @Published var photoDryRun = false
     @Published var photoUseQwen = false
+    @Published var photoExportFeatures = UserDefaults.standard.bool(forKey: "TravelCut.photoExportFeatures") {
+        didSet { UserDefaults.standard.set(photoExportFeatures, forKey: "TravelCut.photoExportFeatures") }
+    }
+    @Published var photoDebugLog = UserDefaults.standard.bool(forKey: "TravelCut.photoDebugLog") {
+        didSet { UserDefaults.standard.set(photoDebugLog, forKey: "TravelCut.photoDebugLog") }
+    }
 
     @Published var inputFolder: URL?
     @Published var isRunning = false
@@ -282,7 +290,9 @@ final class AppModel: ObservableObject {
             inputFolder: inputFolder,
             selectedThemes: selectedThemes,
             useQwen: photoUseQwen,
-            writeRatings: !photoDryRun
+            writeRatings: !photoDryRun,
+            exportFeatures: photoExportFeatures,
+            debugLog: photoDebugLog
         )
         isRunning = true
         progress = 0
@@ -312,6 +322,10 @@ final class AppModel: ObservableObject {
                 if summary.visionFailures > 0 { lines.append("警告：\(summary.visionFailures) 张照片的画面分析失败，结果不可靠") }
                 if summary.exiftoolMissing { lines.append("写入 JPEG 需要 exiftool：brew install exiftool") }
                 if summary.notWritable > 0 { lines.append("未写入 \(summary.notWritable) 张") }
+                var extras: [String] = []
+                if summary.featuresFile != nil { extras.append("「\(PhotoCullEngine.featuresName)」") }
+                if configuration.debugLog { extras.append("「\(PhotoCullEngine.debugLogName)」") }
+                if !extras.isEmpty { lines.append("已在照片文件夹里生成" + extras.joined(separator: "和")) }
                 lines.append(summary.wroteRatings
                     ? "在 Bridge 里按创建日期排序、过滤 2 星或 3 星以上即可"
                     : "试运行：没有写入星级，结果见文件夹里的「\(PhotoCullEngine.reportName)」")

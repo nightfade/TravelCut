@@ -8,17 +8,25 @@ public struct PhotoCullConfiguration: Sendable {
     public let useQwen: Bool
     /// false: only write the report, leave every sidecar untouched.
     public let writeRatings: Bool
+    /// Write MobileCLIP embeddings to "TravelCut 照片特征.json" (also on with TRAVELCUT_EXPORT_FEATURES=1).
+    public let exportFeatures: Bool
+    /// Write debug output to "TravelCut 调试日志.txt" in the photo folder.
+    public let debugLog: Bool
 
     public init(
         inputFolder: URL,
         selectedThemes: Set<HighlightTheme> = HighlightTheme.defaultSelection,
         useQwen: Bool = true,
-        writeRatings: Bool = true
+        writeRatings: Bool = true,
+        exportFeatures: Bool = false,
+        debugLog: Bool = false
     ) {
         self.inputFolder = inputFolder
         self.selectedThemes = selectedThemes
         self.useQwen = useQwen
         self.writeRatings = writeRatings
+        self.exportFeatures = exportFeatures
+        self.debugLog = debugLog
     }
 }
 
@@ -41,6 +49,8 @@ public struct PhotoCullSummary: Sendable {
 /// into the RAW sidecars as star ratings, a "组 0042 · 第 1/5" title and keywords for Bridge.
 public final class PhotoCullEngine: @unchecked Sendable {
     public static let reportName = "TravelCut 照片精选报告.json"
+    public static let featuresName = "TravelCut 照片特征.json"
+    public static let debugLogName = "TravelCut 调试日志.txt"
 
     public init() {}
 
@@ -51,6 +61,10 @@ public final class PhotoCullEngine: @unchecked Sendable {
         guard !configuration.selectedThemes.isEmpty else {
             throw TravelCutError.invalidArguments("请至少选择一种想保留的内容")
         }
+        if configuration.debugLog {
+            TravelCutLog.start(at: configuration.inputFolder.appendingPathComponent(Self.debugLogName))
+        }
+        defer { if configuration.debugLog { TravelCutLog.stop() } }
         progress(ProgressUpdate(fraction: 0.01, message: "正在查找照片…"))
         let items = try PhotoDiscovery.discover(in: configuration.inputFolder)
         guard !items.isEmpty else { throw TravelCutError.invalidArguments("所选文件夹中没有找到照片。") }
@@ -100,9 +114,9 @@ public final class PhotoCullEngine: @unchecked Sendable {
             guard let left = metrics[i]?.featurePrint, let right = metrics[j]?.featurePrint else { return nil }
             var distance: Float = 0
             guard (try? left.computeDistance(&distance, to: right)) != nil else { return nil }
-            if ProcessInfo.processInfo.environment["TRAVELCUT_DEBUG"] == "1" {
+            if TravelCutLog.isEnabled {
                 let gap = items[j].capturedAt.timeIntervalSince(items[i].capturedAt)
-                FileHandle.standardError.write(Data(String(
+                TravelCutLog.write(Data(String(
                     format: "GROUP %@ -> %@ gap=%.2fs distance=%.3f\n",
                     items[i].primary.lastPathComponent, items[j].primary.lastPathComponent, gap, distance
                 ).utf8))
@@ -111,10 +125,10 @@ public final class PhotoCullEngine: @unchecked Sendable {
         }
 
         var featuresURL: URL?
-        if ProcessInfo.processInfo.environment["TRAVELCUT_EXPORT_FEATURES"] == "1" {
+        if configuration.exportFeatures || ProcessInfo.processInfo.environment["TRAVELCUT_EXPORT_FEATURES"] == "1" {
             // MobileCLIP image embeddings, for checking whether the user's taste can be learned.
             // Written before Qwen runs, so a long run that gets stopped still leaves the features.
-            let url = configuration.inputFolder.appendingPathComponent("TravelCut 照片特征.json")
+            let url = configuration.inputFolder.appendingPathComponent(Self.featuresName)
             var rows: [[String: Any]] = []
             for (groupIndex, members) in groups.enumerated() {
                 for index in members {
