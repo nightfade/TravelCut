@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 
 /// Offline coordinate → place name, from GeoNames `cities500` (CC BY 4.0): every town with 500+
@@ -5,10 +6,13 @@ import Foundation
 struct Place: Equatable, Codable, Sendable {
     let countryCode: String
     let country: String   // Chinese name from the system locale, e.g. 挪威
-    let city: String      // Chinese name when GeoNames has one, else the local name, e.g. 特罗姆瑟 / Tromsø
+    let city: String      // Chinese name when one is known, else the local name, e.g. 特罗姆瑟 / Tromsø
+    var detail: String? = nil   // landmark from the optional online lookup, e.g. 查理大桥
 
-    var keywordPath: [String] { ["TravelCut", "地点", country, city] }
-    var text: String { "\(country) \(city)" }
+    var keywordPath: [String] { ["TravelCut", "地点", country, city] + (detail.map { [$0] } ?? []) }
+    var text: String { ([country, city] + (detail.map { [$0] } ?? [])).joined(separator: " ") }
+    /// City level only, for places borrowed by inference: a landmark is too precise to guess.
+    var cityOnly: Place { Place(countryCode: countryCode, country: country, city: city) }
 }
 
 final class GeoPlaces {
@@ -137,12 +141,72 @@ final class GeoPlaces {
     }
 }
 
+/// Optional, more precise lookup through Apple's geocoding service. It sends coordinates to Apple,
+/// so it is off unless the user turns it on. Points within about 110 m share one request (and one
+/// cache entry); requests are spaced out because Apple rate-limits geocoding, and anything that
+/// fails falls back to the offline result.
+final class OnlinePlaces {
+    struct Result: Codable { let locality: String?; let landmark: String?; let country: String? }
+
+    static let minimumInterval: TimeInterval = 1.2
+    private let geocoder = CLGeocoder()
+    private var lastRequest = Date.distantPast
+
+    static func key(latitude: Double, longitude: Double) -> String {
+        String(format: "%.3f,%.3f", latitude, longitude)
+    }
+
+    /// nil means the lookup failed (network, throttling) and is worth retrying on a later run;
+    /// an empty Result means Apple has no name for the spot (open sea) and can be cached.
+    func lookup(latitude: Double, longitude: Double) async -> Result? {
+        for attempt in 0..<3 {
+            let wait = Self.minimumInterval - Date().timeIntervalSince(lastRequest)
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            lastRequest = Date()
+            do {
+                let marks = try await geocoder.reverseGeocodeLocation(
+                    CLLocation(latitude: latitude, longitude: longitude),
+                    preferredLocale: Locale(identifier: "zh_CN")
+                )
+                guard let mark = marks.first else { return Result(locality: nil, landmark: nil, country: nil) }
+                return Result(locality: mark.locality, landmark: mark.areasOfInterest?.first, country: mark.country)
+            } catch let error as CLError where error.code == .network && attempt < 2 {
+                // Throttled: back off and retry.
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            } catch let error as CLError where error.code == .geocodeFoundNoResult {
+                return Result(locality: nil, landmark: nil, country: nil)
+            } catch {
+                return nil
+            }
+        }
+        return nil
+    }
+
+    /// Combines the online answer with the offline town: prefer whichever city name is Chinese,
+    /// and ignore numbered districts such as "Praha 1" that Apple sometimes returns as the locality.
+    static func merge(offline: Place?, online: Result) -> Place? {
+        func hasChinese(_ s: String) -> Bool { s.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) } }
+        let onlineCity = online.locality.flatMap { $0.contains(where: \.isNumber) ? nil : $0 }
+        let city: String?
+        switch (onlineCity, offline?.city) {
+        case let (on?, off?): city = (!hasChinese(on) && hasChinese(off)) ? off : on
+        case let (on?, nil): city = on
+        case let (nil, off?): city = off
+        case (nil, nil): city = nil
+        }
+        guard let city else { return offline }
+        let country = online.country ?? offline?.country ?? ""
+        let landmark = online.landmark.flatMap { $0 == city ? nil : $0 }
+        return Place(countryCode: offline?.countryCode ?? "", country: country, city: city, detail: landmark)
+    }
+}
+
 /// Places for photos without GPS, from the nearest geotagged photo in time.
 enum PlaceInference {
     /// Only borrow a place from a photo taken this close in time; city level makes 30 min safe.
     static let window: TimeInterval = 30 * 60
 
-    enum Source: String, Codable, Sendable { case gps = "GPS", inferred = "推断" }
+    enum Source: String, Codable, Sendable { case gps = "GPS", online = "GPS·在线", inferred = "推断" }
 
     /// `known[i]` is photo i's own place, if it has GPS. Times need not be sorted.
     static func infer(times: [Date], known: [Place?]) -> [(Place, Source)?] {
@@ -161,7 +225,7 @@ enum PlaceInference {
                 .map { (tagged[$0], abs(taggedTimes[$0].timeIntervalSince(times[index]))) }
                 .filter { $0.1 <= window }
             guard let nearest = neighbors.min(by: { $0.1 < $1.1 }), let place = known[nearest.0] else { return nil }
-            return (place, .inferred)
+            return (place.cityOnly, .inferred)
         }
     }
 }

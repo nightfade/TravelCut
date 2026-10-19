@@ -83,19 +83,23 @@ final class PhotoCache {
 
     private struct AnalysisLine: Codable { let key: String; let metrics: Metrics }
     private struct QwenLine: Codable { let key: String; let judgement: PhotoGroupJudgement }
+    private struct GeocodeLine: Codable { let key: String; let result: OnlinePlaces.Result }
 
     private let root: URL
     private var analysis: [String: Metrics] = [:]
     private var judgements: [String: PhotoGroupJudgement] = [:]
     private var analysisHandle: FileHandle?
     private var qwenHandle: FileHandle?
+    private var geocodes: [String: OnlinePlaces.Result] = [:]
+    private var geocodeHandle: FileHandle?
+    private let folder: URL
     private let encoder = JSONEncoder()
 
     /// Returns nil when the cache cannot be used (read-only volume, or disabled by TRAVELCUT_NO_CACHE=1).
     init?(root: URL) {
         guard ProcessInfo.processInfo.environment["TRAVELCUT_NO_CACHE"] != "1" else { return nil }
         self.root = root.standardizedFileURL
-        let folder = root.appendingPathComponent(Self.folderName, isDirectory: true)
+        folder = root.appendingPathComponent(Self.folderName, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         } catch { return nil }
@@ -111,6 +115,7 @@ final class PhotoCache {
     deinit {
         try? analysisHandle?.close()
         try? qwenHandle?.close()
+        try? geocodeHandle?.close()
     }
 
     var cachedPhotoCount: Int { analysis.count }
@@ -140,6 +145,25 @@ final class PhotoCache {
     func store(_ judgement: PhotoGroupJudgement, for key: String) {
         judgements[key] = judgement
         append(QwenLine(key: key, judgement: judgement), to: qwenHandle)
+    }
+
+    /// Online place lookups, keyed by `OnlinePlaces.key`. The file is only created once used.
+    func geocode(for key: String) -> OnlinePlaces.Result? {
+        loadGeocodes()
+        return geocodes[key]
+    }
+
+    func store(_ result: OnlinePlaces.Result, forGeocode key: String) {
+        loadGeocodes()
+        geocodes[key] = result
+        append(GeocodeLine(key: key, result: result), to: geocodeHandle)
+    }
+
+    private func loadGeocodes() {
+        guard geocodeHandle == nil else { return }
+        let url = folder.appendingPathComponent("geocode-v1.jsonl")
+        geocodes = Self.load(url, as: GeocodeLine.self).reduce(into: [:]) { $0[$1.key] = $1.result }
+        geocodeHandle = Self.appendHandle(url)
     }
 
     private func append<T: Encodable>(_ value: T, to handle: FileHandle?) {

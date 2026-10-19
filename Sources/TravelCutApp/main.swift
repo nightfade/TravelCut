@@ -115,6 +115,7 @@ struct ContentView: View {
                         Toggle("试运行：只生成报告，不写入星级", isOn: $model.photoDryRun)
                         Toggle("导出画面特征（用于学习口味）", isOn: $model.photoExportFeatures)
                         Toggle("保存调试日志", isOn: $model.photoDebugLog)
+                        Toggle("在线查询更精确的地点（会把照片坐标发送给 Apple）", isOn: $model.photoOnlinePlaces)
                     }
                 }
                 .font(.callout)
@@ -186,6 +187,9 @@ final class AppModel: ObservableObject {
     }
     @Published var photoDebugLog = UserDefaults.standard.bool(forKey: "TravelCut.photoDebugLog") {
         didSet { UserDefaults.standard.set(photoDebugLog, forKey: "TravelCut.photoDebugLog") }
+    }
+    @Published var photoOnlinePlaces = UserDefaults.standard.bool(forKey: "TravelCut.photoOnlinePlaces") {
+        didSet { UserDefaults.standard.set(photoOnlinePlaces, forKey: "TravelCut.photoOnlinePlaces") }
     }
 
     @Published var inputFolder: URL?
@@ -292,7 +296,8 @@ final class AppModel: ObservableObject {
             useQwen: photoUseQwen,
             writeRatings: !photoDryRun,
             exportFeatures: photoExportFeatures,
-            debugLog: photoDebugLog
+            debugLog: photoDebugLog,
+            onlinePlaces: photoOnlinePlaces
         )
         isRunning = true
         progress = 0
@@ -318,6 +323,7 @@ final class AppModel: ObservableObject {
                 lastOutputFolder = inputFolder
                 var lines = ["完成：\(summary.photoCount) 张照片分成 \(summary.groupCount) 组，2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张"]
                 if summary.skippedUserMarked > 0 { lines.append("已有你的星级或标签而跳过 \(summary.skippedUserMarked) 张") }
+                if summary.onlinePlaceFailures > 0 { lines.append("在线地点查询失败 \(summary.onlinePlaceFailures) 处，这些照片用离线城市名") }
                 if summary.qwenFailures > 0 { lines.append("Qwen 没能判断 \(summary.qwenFailures) 组，这些组按技术分挑选") }
                 if summary.visionFailures > 0 { lines.append("警告：\(summary.visionFailures) 张照片的画面分析失败，结果不可靠") }
                 if summary.exiftoolMissing { lines.append("写入 JPEG 需要 exiftool：brew install exiftool") }

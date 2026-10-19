@@ -12,6 +12,8 @@ public struct PhotoCullConfiguration: Sendable {
     public let exportFeatures: Bool
     /// Write debug output to "TravelCut 调试日志.txt" in the photo folder.
     public let debugLog: Bool
+    /// Ask Apple's geocoding service for landmark-level places (sends photo coordinates to Apple).
+    public let onlinePlaces: Bool
 
     public init(
         inputFolder: URL,
@@ -19,7 +21,8 @@ public struct PhotoCullConfiguration: Sendable {
         useQwen: Bool = true,
         writeRatings: Bool = true,
         exportFeatures: Bool = false,
-        debugLog: Bool = false
+        debugLog: Bool = false,
+        onlinePlaces: Bool = false
     ) {
         self.inputFolder = inputFolder
         self.selectedThemes = selectedThemes
@@ -27,6 +30,7 @@ public struct PhotoCullConfiguration: Sendable {
         self.writeRatings = writeRatings
         self.exportFeatures = exportFeatures
         self.debugLog = debugLog
+        self.onlinePlaces = onlinePlaces
     }
 }
 
@@ -43,6 +47,7 @@ public struct PhotoCullSummary: Sendable {
     public let exiftoolMissing: Bool
     public let wroteRatings: Bool
     public let featuresFile: URL?
+    public let onlinePlaceFailures: Int   // spots the online lookup could not reach; they kept the offline name
 }
 
 /// Groups a trip's photos, picks the best of each group with Qwen's help and writes the result
@@ -147,13 +152,21 @@ public final class PhotoCullEngine: @unchecked Sendable {
 
         // Places: GPS from the camera, else borrowed from the nearest geotagged photo in time.
         var places = [(Place, PlaceInference.Source)?](repeating: nil, count: items.count)
+        var onlinePlaceFailures = 0
         if items.contains(where: { $0.latitude != nil }) {
             do {
                 let geo = try GeoPlaces.load { message in progress(ProgressUpdate(fraction: 0.495, message: message)) }
-                let known = items.map { item in
+                var known = items.map { item in
                     item.latitude.flatMap { lat in item.longitude.flatMap { geo.place(latitude: lat, longitude: $0) } }
                 }
+                var online = Set<Int>()
+                if configuration.onlinePlaces {
+                    (online, onlinePlaceFailures) = await refineOnline(
+                        items: items, known: &known, cache: cache, progress: progress
+                    )
+                }
                 places = PlaceInference.infer(times: items.map(\.capturedAt), known: known)
+                for index in online { places[index] = places[index].map { ($0.0, .online) } }
             } catch {
                 // Place names are a bonus; never fail the run over them.
                 TravelCutLog.write(Data("地点查询不可用：\(error.localizedDescription)\n".utf8))
@@ -357,8 +370,46 @@ public final class PhotoCullEngine: @unchecked Sendable {
             visionFailures: metrics.filter { $0?.visionFailed ?? false }.count,
             qwenFailures: qwenFailures,
             notWritable: notWritable, exiftoolMissing: exiftool == nil && configuration.writeRatings,
-            wroteRatings: configuration.writeRatings, featuresFile: featuresURL
+            wroteRatings: configuration.writeRatings, featuresFile: featuresURL,
+            onlinePlaceFailures: onlinePlaceFailures
         )
+    }
+
+    /// Replaces offline places with Apple's answer for photos that have their own GPS, one request
+    /// per ~110 m spot. Returns the photos refined and the number of spots that could not be looked up.
+    private func refineOnline(
+        items: [PhotoItem], known: inout [Place?], cache: PhotoCache?,
+        progress: @Sendable @escaping (ProgressUpdate) -> Void
+    ) async -> (Set<Int>, Int) {
+        var spots: [String: [Int]] = [:]
+        var order: [String] = []
+        for (index, item) in items.enumerated() {
+            guard let lat = item.latitude, let lon = item.longitude else { continue }
+            let key = OnlinePlaces.key(latitude: lat, longitude: lon)
+            if spots[key] == nil { order.append(key) }
+            spots[key, default: []].append(index)
+        }
+        let geocoder = OnlinePlaces()
+        var refined = Set<Int>()
+        var failures = 0
+        var consecutiveFailures = 0
+        for (number, key) in order.enumerated() {
+            let members = spots[key]!
+            var result = cache?.geocode(for: key)
+            if result == nil, consecutiveFailures < 3 {
+                if number % 5 == 0 {
+                    progress(ProgressUpdate(fraction: 0.495, message: "正在在线查询地点 \(number + 1)/\(order.count)…"))
+                }
+                let item = items[members[0]]
+                result = await geocoder.lookup(latitude: item.latitude!, longitude: item.longitude!)
+                if let result { cache?.store(result, forGeocode: key); consecutiveFailures = 0 } else { consecutiveFailures += 1 }
+            }
+            // After three failures in a row (offline, or throttled for good) stop asking; the rest keep offline names.
+            guard let result else { failures += 1; continue }
+            guard let place = OnlinePlaces.merge(offline: known[members[0]], online: result) else { continue }
+            for index in members { known[index] = place; refined.insert(index) }
+        }
+        return (refined, failures)
     }
 }
 

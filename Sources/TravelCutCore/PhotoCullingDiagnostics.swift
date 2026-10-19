@@ -339,6 +339,24 @@ extension TravelCutDiagnostics {
         expect(inferred[2]?.0 == bergen, "nearer neighbour in time wins (bergen 200 s away)")
         expect(inferred[4] == nil, "nothing within 30 minutes → no place")
 
+        // Online refinement: landmark kept, numbered districts and non-Chinese names lose to the offline city.
+        let praha = Place(countryCode: "CZ", country: "捷克", city: "布拉格")
+        let bridge = OnlinePlaces.merge(offline: praha, online: .init(locality: "Praha 1", landmark: "查理大桥", country: "捷克"))
+        expect(bridge?.city == "布拉格" && bridge?.detail == "查理大桥", "district locality ignored, got \(String(describing: bridge))")
+        expect(bridge?.keywordPath == ["TravelCut", "地点", "捷克", "布拉格", "查理大桥"], "landmark is the deepest keyword")
+        expect(bridge?.text == "捷克 布拉格 查理大桥", "Qwen gets the landmark too")
+        let tromso = OnlinePlaces.merge(offline: Place(countryCode: "NO", country: "挪威", city: "特罗姆瑟"),
+                                        online: .init(locality: "Tromsø", landmark: "Tromsøya", country: "挪威"))
+        expect(tromso?.city == "特罗姆瑟" && tromso?.detail == "Tromsøya", "Chinese offline city beats a local-name locality")
+        let palace = OnlinePlaces.merge(offline: Place(countryCode: "FR", country: "法国", city: "Le Chesnay"),
+                                        online: .init(locality: "凡尔赛", landmark: "凡尔赛宫", country: "法国"))
+        expect(palace?.city == "凡尔赛" && palace?.detail == "凡尔赛宫", "Chinese online city beats a non-Chinese offline one")
+        let sea = OnlinePlaces.merge(offline: praha, online: .init(locality: nil, landmark: nil, country: nil))
+        expect(sea == praha, "an empty answer keeps the offline place")
+        let lent = PlaceInference.infer(times: [base, base.addingTimeInterval(60)], known: [bridge, nil])
+        expect(lent[1]?.0.detail == nil && lent[1]?.0.city == "布拉格", "inferred places stay at city level")
+        expect(OnlinePlaces.key(latitude: 50.08649, longitude: 14.41140) == "50.086,14.411", "~110 m spot key")
+
         // GPS in EXIF: south and west are negative; 0/0 means no fix.
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("TravelCut-gps-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

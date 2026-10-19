@@ -95,6 +95,7 @@ struct TravelCutCLI {
         var write = true
         var exportFeatures = false
         var debugLog = false
+        var onlinePlaces = false
         var index = 1
         let arguments = CommandLine.arguments
         while index < arguments.count {
@@ -114,6 +115,7 @@ struct TravelCutCLI {
             case "--dry-run": write = false
             case "--export-features": exportFeatures = true
             case "--debug-log": debugLog = true
+            case "--online-places": onlinePlaces = true
             default:
                 FileHandle.standardError.write(Data("错误：未知参数 \(arguments[index])\n".utf8))
                 Foundation.exit(1)
@@ -127,7 +129,8 @@ struct TravelCutCLI {
         do {
             let summary = try await PhotoCullEngine().run(configuration: PhotoCullConfiguration(
                 inputFolder: input, selectedThemes: themes, useQwen: useQwen, writeRatings: write,
-                exportFeatures: exportFeatures, debugLog: debugLog
+                exportFeatures: exportFeatures, debugLog: debugLog,
+                onlinePlaces: onlinePlaces
             )) { update in
                 FileHandle.standardError.write(Data("[\(Int(update.fraction * 100))%] \(update.message)\n".utf8))
             }
@@ -138,6 +141,7 @@ struct TravelCutCLI {
             if summary.skippedUserMarked > 0 { print("已有你的星级或标签而跳过：\(summary.skippedUserMarked) 张") }
             if summary.notWritable > 0 { print("未写入：\(summary.notWritable) 张（格式不支持，或写入 JPEG 需要先安装 exiftool）") }
             print(summary.wroteRatings ? "星级已写入：RAW 写进旁边的 .xmp，JPEG 写进文件元数据" : "试运行：没有写入任何星级")
+            if summary.onlinePlaceFailures > 0 { print("在线地点查询失败 \(summary.onlinePlaceFailures) 处，这些照片用离线城市名") }
             if let features = summary.featuresFile { print("特征：\(features.path)") }
             print("报告：\(summary.reportFile.path)")
         } catch {
@@ -155,7 +159,7 @@ struct TravelCutCLI {
 
           照片精选（星级写入 RAW 旁边的 .xmp，Bridge 可读）：
           travelcut-cli --photos --input <照片根目录> [--themes …] [--fast-only] [--dry-run]
-                        [--export-features] [--debug-log]
+                        [--export-features] [--debug-log] [--online-places]
 
           可用标签：\(themeNames)
         """)
