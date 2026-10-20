@@ -6,8 +6,12 @@ public struct PhotoCullConfiguration: Sendable {
     public let inputFolder: URL
     public let selectedThemes: Set<HighlightTheme>
     public let useQwen: Bool
-    /// false: only write the report, leave every sidecar untouched.
+    /// false: only write the report, leave every photo and sidecar untouched.
     public let writeRatings: Bool
+    /// Also write stars (best of each group 3, close alternates 2, junk rejected). Off by default:
+    /// checked against a 9,000-photo trip, the stars were barely better than random at predicting
+    /// the user's picks, so the default is organising only (group title and keywords).
+    public let writeStars: Bool
     /// Write MobileCLIP embeddings to "TravelCut 照片特征.json" (also on with TRAVELCUT_EXPORT_FEATURES=1).
     public let exportFeatures: Bool
     /// Write debug output to "TravelCut 调试日志.txt" in the photo folder.
@@ -20,6 +24,7 @@ public struct PhotoCullConfiguration: Sendable {
         selectedThemes: Set<HighlightTheme> = HighlightTheme.defaultSelection,
         useQwen: Bool = true,
         writeRatings: Bool = true,
+        writeStars: Bool = false,
         exportFeatures: Bool = false,
         debugLog: Bool = false,
         onlinePlaces: Bool = false
@@ -28,6 +33,7 @@ public struct PhotoCullConfiguration: Sendable {
         self.selectedThemes = selectedThemes
         self.useQwen = useQwen
         self.writeRatings = writeRatings
+        self.writeStars = writeStars
         self.exportFeatures = exportFeatures
         self.debugLog = debugLog
         self.onlinePlaces = onlinePlaces
@@ -45,7 +51,8 @@ public struct PhotoCullSummary: Sendable {
     public let qwenFailures: Int          // groups Qwen could not judge (error or 3-minute timeout)
     public let notWritable: Int           // formats that hold no metadata Bridge reads (e.g. PNG), or exiftool missing
     public let exiftoolMissing: Bool
-    public let wroteRatings: Bool
+    public let wroteRatings: Bool         // wrote anything into the photos (false: dry run)
+    public let wroteStars: Bool
     public let featuresFile: URL?
     public let onlinePlaceFailures: Int   // spots the online lookup could not reach; they kept the offline name
 }
@@ -53,7 +60,7 @@ public struct PhotoCullSummary: Sendable {
 /// Groups a trip's photos, picks the best of each group with Qwen's help and writes the result
 /// into the RAW sidecars as star ratings, a "组 0042 · 第 1/5" title and keywords for Bridge.
 public final class PhotoCullEngine: @unchecked Sendable {
-    public static let reportName = "TravelCut 照片精选报告.json"
+    public static let reportName = "TravelCut 照片整理报告.json"
     public static let featuresName = "TravelCut 照片特征.json"
     public static let debugLogName = "TravelCut 调试日志.txt"
 
@@ -254,7 +261,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
 
         progress(ProgressUpdate(
             fraction: 0.97,
-            message: configuration.writeRatings ? "正在写入星级…" : "试运行：只生成报告，不写入星级…"
+            message: configuration.writeRatings ? "正在写入分组和关键字…" : "试运行：只生成报告，不写入照片…"
         ))
         let exiftool = EmbeddedMetadataWriter.findExiftool()
         var embeddedJobs: [EmbeddedMetadataWriter.Job] = []
@@ -273,16 +280,18 @@ public final class PhotoCullEngine: @unchecked Sendable {
             for (position, index) in members.enumerated() {
                 let item = items[index]
                 let rating = result.ratings[position]
-                let rank = (result.order.firstIndex(of: position) ?? position) + 1
+                // With stars the title shows the pick order; without, the position in time.
+                let rank = configuration.writeStars ? (result.order.firstIndex(of: position) ?? position) + 1 : position + 1
                 var keywords = [["TravelCut", "组", String(format: "组 %04d", number)]]
                 if let bestTheme { keywords.append(["TravelCut", "主题", bestTheme.rawValue]) }
                 // Qwen's label describes the whole group, so every member carries it.
                 let label = judgement?.label.flatMap { $0.isEmpty ? nil : $0 }
                 if let label { keywords.append(["TravelCut", "标签", label]) }
                 if let place = places[index]?.0 { keywords.append(place.keywordPath) }
+                if let reason = metrics[index]?.junkReason { keywords.append(["TravelCut", "可能是废片", reason]) }
                 var outcome = "试运行"
                 let fields = XMPSidecarWriter.Fields(
-                    rating: rating,
+                    rating: configuration.writeStars ? rating : nil,
                     title: PhotoRater.title(group: number, rank: rank, size: members.count, label: label),
                     keywords: keywords
                 )
@@ -332,7 +341,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
         }
 
         if let exiftool, !embeddedJobs.isEmpty {
-            progress(ProgressUpdate(fraction: 0.98, message: "正在把星级写入 \(embeddedJobs.count) 张 JPEG…"))
+            progress(ProgressUpdate(fraction: 0.98, message: "正在写入 \(embeddedJobs.count) 张 JPEG…"))
             let outcomes = try EmbeddedMetadataWriter.apply(embeddedJobs, exiftool: exiftool)
             for groupIndex in report.indices {
                 for photoIndex in report[groupIndex].photos.indices where report[groupIndex].photos[photoIndex].outcome == "待写入" {
@@ -358,6 +367,7 @@ public final class PhotoCullEngine: @unchecked Sendable {
             selectedThemes: HighlightTheme.allCases.filter(configuration.selectedThemes.contains).map(\.rawValue),
             usedQwen: configuration.useQwen,
             wroteRatings: configuration.writeRatings,
+            wroteStars: configuration.writeStars,
             photoCount: items.count,
             groupCount: groups.count,
             groups: report
@@ -370,7 +380,8 @@ public final class PhotoCullEngine: @unchecked Sendable {
             visionFailures: metrics.filter { $0?.visionFailed ?? false }.count,
             qwenFailures: qwenFailures,
             notWritable: notWritable, exiftoolMissing: exiftool == nil && configuration.writeRatings,
-            wroteRatings: configuration.writeRatings, featuresFile: featuresURL,
+            wroteRatings: configuration.writeRatings, wroteStars: configuration.writeRatings && configuration.writeStars,
+            featuresFile: featuresURL,
             onlinePlaceFailures: onlinePlaceFailures
         )
     }
@@ -452,6 +463,7 @@ struct PhotoCullReport: Codable {
     let selectedThemes: [String]
     let usedQwen: Bool
     let wroteRatings: Bool
+    let wroteStars: Bool
     let photoCount: Int
     let groupCount: Int
     var groups: [Group]

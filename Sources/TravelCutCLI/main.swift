@@ -96,6 +96,7 @@ struct TravelCutCLI {
         var exportFeatures = false
         var debugLog = false
         var onlinePlaces = false
+        var stars = false
         var index = 1
         let arguments = CommandLine.arguments
         while index < arguments.count {
@@ -116,6 +117,7 @@ struct TravelCutCLI {
             case "--export-features": exportFeatures = true
             case "--debug-log": debugLog = true
             case "--online-places": onlinePlaces = true
+            case "--stars": stars = true
             default:
                 FileHandle.standardError.write(Data("错误：未知参数 \(arguments[index])\n".utf8))
                 Foundation.exit(1)
@@ -128,19 +130,22 @@ struct TravelCutCLI {
         }
         do {
             let summary = try await PhotoCullEngine().run(configuration: PhotoCullConfiguration(
-                inputFolder: input, selectedThemes: themes, useQwen: useQwen, writeRatings: write,
+                inputFolder: input, selectedThemes: themes, useQwen: useQwen, writeRatings: write, writeStars: stars,
                 exportFeatures: exportFeatures, debugLog: debugLog,
                 onlinePlaces: onlinePlaces
             )) { update in
                 FileHandle.standardError.write(Data("[\(Int(update.fraction * 100))%] \(update.message)\n".utf8))
             }
             print("完成：\(summary.photoCount) 张照片，分成 \(summary.groupCount) 组")
-            print("2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张")
+            if stars { print("2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张") }
+            else if summary.rejectedCount > 0 { print("\(summary.rejectedCount) 张可能是废片（关键字 TravelCut › 可能是废片）") }
             if summary.qwenFailures > 0 { print("Qwen 没能判断 \(summary.qwenFailures) 组（出错或超过 3 分钟），这些组按技术分挑选") }
             if summary.visionFailures > 0 { print("警告：\(summary.visionFailures) 张照片的画面分析失败，用了默认值，结果不可靠") }
             if summary.skippedUserMarked > 0 { print("已有你的星级或标签而跳过：\(summary.skippedUserMarked) 张") }
             if summary.notWritable > 0 { print("未写入：\(summary.notWritable) 张（格式不支持，或写入 JPEG 需要先安装 exiftool）") }
-            print(summary.wroteRatings ? "星级已写入：RAW 写进旁边的 .xmp，JPEG 写进文件元数据" : "试运行：没有写入任何星级")
+            print(summary.wroteRatings
+                ? (summary.wroteStars ? "分组、关键字和星级已写入" : "分组和关键字已写入") + "：RAW 写进旁边的 .xmp，JPEG 写进文件元数据"
+                : "试运行：没有写入照片")
             if summary.onlinePlaceFailures > 0 { print("在线地点查询失败 \(summary.onlinePlaceFailures) 处，这些照片用离线城市名") }
             if let features = summary.featuresFile { print("特征：\(features.path)") }
             print("报告：\(summary.reportFile.path)")
@@ -157,9 +162,9 @@ struct TravelCutCLI {
           travelcut-cli --input <素材文件夹> [--output-folder <输出文件夹>]
                         [--themes "沿途风景,自然景观"] [--fast-only]
 
-          照片精选（星级写入 RAW 旁边的 .xmp，Bridge 可读）：
+          照片整理（分组和关键字写入 RAW 旁边的 .xmp 或 JPEG 元数据，Bridge 可读）：
           travelcut-cli --photos --input <照片根目录> [--themes …] [--fast-only] [--dry-run]
-                        [--export-features] [--debug-log] [--online-places]
+                        [--stars] [--export-features] [--debug-log] [--online-places]
 
           可用标签：\(themeNames)
         """)

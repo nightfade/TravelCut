@@ -1,10 +1,12 @@
 import Foundation
 
-/// Writes rating, title and keywords into JPEG / HEIC / TIFF / DNG files with exiftool, because Bridge
-/// reads metadata inside these files rather than from a sidecar. Only metadata changes; exiftool
-/// copies the image data unchanged. Same rules as `XMPSidecarWriter`:
+/// Writes title, keywords and optionally a rating into JPEG / HEIC / TIFF / DNG files with exiftool,
+/// because Bridge reads metadata inside these files rather than from a sidecar. Only metadata changes;
+/// exiftool copies the image data unchanged. Same rules as `XMPSidecarWriter`:
 ///
-/// - photos the user already rated or colour-labelled are skipped
+/// - without a rating, every photo gets title and keywords; an old TravelCut rating the user has not
+///   changed is cleared
+/// - with a rating, photos the user already rated or colour-labelled are skipped
 /// - values TravelCut wrote before may be replaced, unless the user has since changed the rating
 ///
 /// exiftool cannot write a custom namespace without a config file, so TravelCut remembers the rating
@@ -41,9 +43,12 @@ enum EmbeddedMetadataWriter {
     }
 
     /// What decides whether TravelCut may write, given what is in the file now.
+    static func marker(in existing: Existing) -> Int? {
+        existing.hierarchical.first { $0.hasPrefix(markerPrefix) }.flatMap { Int($0.dropFirst(markerPrefix.count)) }
+    }
+
     static func decide(_ existing: Existing) -> Bool {
-        let marker = existing.hierarchical.first { $0.hasPrefix(markerPrefix) }
-            .flatMap { Int($0.dropFirst(markerPrefix.count)) }
+        let marker = marker(in: existing)
         if !existing.label.isEmpty { return false }
         if let marker { return existing.rating == marker }
         return existing.rating == 0
@@ -51,7 +56,12 @@ enum EmbeddedMetadataWriter {
 
     /// Arguments for one file, to be followed by `-execute` in a batch.
     static func arguments(for job: Job, existing: Existing) -> [String] {
-        var args = ["-overwrite_original", "-P", "-XMP-xmp:Rating=\(job.fields.rating)"]
+        var args = ["-overwrite_original", "-P"]
+        if let rating = job.fields.rating {
+            args.append("-XMP-xmp:Rating=\(rating)")
+        } else if let marker = marker(in: existing), marker == existing.rating {
+            args.append("-XMP-xmp:Rating=0")   // clear a rating an earlier version wrote
+        }
         if existing.title.isEmpty || existing.title.hasPrefix("组 ") {
             args.append("-XMP-dc:Title=\(job.fields.title)")
         }
@@ -66,7 +76,7 @@ enum EmbeddedMetadataWriter {
             args.append("-XMP-lr:HierarchicalSubject+=\(path.joined(separator: "|"))")
             if let leaf = path.last { args.append("-XMP-dc:Subject+=\(leaf)") }
         }
-        args.append("-XMP-lr:HierarchicalSubject+=\(markerPrefix)\(job.fields.rating)")
+        if let rating = job.fields.rating { args.append("-XMP-lr:HierarchicalSubject+=\(markerPrefix)\(rating)") }
         args.append(job.file.path)
         return args
     }
@@ -79,7 +89,7 @@ enum EmbeddedMetadataWriter {
         var written: [Job] = []
         for job in jobs {
             let current = existing[job.file.path] ?? Existing(rating: 0, label: "", title: "", hierarchical: [])
-            guard decide(current) else { outcomes[job.file] = .skippedUserMarks; continue }
+            guard job.fields.rating == nil || decide(current) else { outcomes[job.file] = .skippedUserMarks; continue }
             batch += arguments(for: job, existing: current) + ["-execute"]
             written.append(job)
         }
@@ -88,7 +98,10 @@ enum EmbeddedMetadataWriter {
             // Verify by reading back instead of parsing exiftool's per-command messages.
             let after = try read(written.map(\.file), exiftool: exiftool)
             for job in written {
-                outcomes[job.file] = after[job.file.path]?.rating == job.fields.rating ? .written : .failed
+                let check = job.fields.keywords.first.map { $0.joined(separator: "|") }
+                let ok = job.fields.rating.map { after[job.file.path]?.rating == $0 }
+                    ?? (check.map { after[job.file.path]?.hierarchical.contains($0) ?? false } ?? true)
+                outcomes[job.file] = ok ? .written : .failed
             }
         }
         return outcomes

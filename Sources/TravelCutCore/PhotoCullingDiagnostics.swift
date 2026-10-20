@@ -90,6 +90,18 @@ extension TravelCutDiagnostics {
                "old TravelCut keywords are removed")
         expect(!args.contains { $0.contains("巴黎") }, "user keywords are untouched")
         expect(args.contains("-XMP-lr:HierarchicalSubject+=TravelCut|写入星级|2"), "new ownership marker")
+        // Organising only (no stars): rated photos are written, the rating is left alone, old own ratings cleared.
+        let organise = EmbeddedMetadataWriter.Job(file: URL(fileURLWithPath: "/t/B.JPG"), fields: .init(
+            rating: nil, title: "组 0002 · 第 1/2", keywords: [["TravelCut", "组", "组 0002"]]))
+        let userRated = EmbeddedMetadataWriter.arguments(for: organise, existing: E(rating: 5, label: "红色", title: "", hierarchical: []))
+        expect(!userRated.contains { $0.hasPrefix("-XMP-xmp:Rating") } && !userRated.contains { $0.contains("写入星级") },
+               "no stars: user rating untouched and no marker, got \(userRated)")
+        expect(userRated.contains("-XMP-lr:HierarchicalSubject+=TravelCut|组|组 0002"), "no stars: keywords still written")
+        let oldOwn = EmbeddedMetadataWriter.arguments(for: organise, existing: E(rating: 3, label: "", title: "", hierarchical: ["TravelCut|写入星级|3"]))
+        expect(oldOwn.contains("-XMP-xmp:Rating=0") && oldOwn.contains("-XMP-lr:HierarchicalSubject-=TravelCut|写入星级|3"),
+               "no stars: an unchanged old TravelCut rating is cleared with its marker")
+        let changedOld = EmbeddedMetadataWriter.arguments(for: organise, existing: E(rating: 4, label: "", title: "", hierarchical: ["TravelCut|写入星级|3"]))
+        expect(!changedOld.contains { $0.hasPrefix("-XMP-xmp:Rating") }, "no stars: a rating the user changed is kept")
 
         failures += placeSelfTest()
         failures += cacheSelfTest()
@@ -235,6 +247,19 @@ extension TravelCutDiagnostics {
             expect((try? XMPSidecarWriter.apply(fields, to: url)) == .skippedUserMarks, "\(name): user mark is respected")
             expect(read(url) == original, "\(name): left byte for byte")
         }
+
+        // 6. Organising only (no stars).
+        let organise = XMPSidecarWriter.Fields(rating: nil, title: "组 0007 · 第 1/2", keywords: [["TravelCut", "组", "组 0007"]])
+        let rated = folder.appendingPathComponent("C.xmp")   // user rated 5 in case 5
+        expect((try? XMPSidecarWriter.apply(organise, to: rated)) == .written, "no stars: a user-rated photo still gets organised")
+        expect(rating(rated) == ["5"], "no stars: the user's rating is untouched, got \(rating(rated))")
+        expect(values(rated, hierPath) == ["TravelCut|组|组 0007"], "no stars: keywords written")
+        let old = folder.appendingPathComponent("F.xmp")
+        _ = try? XMPSidecarWriter.apply(fields, to: old)      // an earlier version wrote 3 stars
+        expect((try? XMPSidecarWriter.apply(organise, to: old)) == .written, "no stars: own old sidecar is written")
+        expect(rating(old) == ["0"] && !read(old).contains("travelcut:Rating"), "no stars: unchanged old TravelCut stars are cleared")
+        expect((try? XMPSidecarWriter.apply(organise, to: fresh)) == .written && rating(fresh) == ["4"],
+               "no stars: stars the user changed are kept")
         return failures
     }
 

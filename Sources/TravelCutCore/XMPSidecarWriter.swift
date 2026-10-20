@@ -5,7 +5,10 @@ import Foundation
 ///
 /// Rules:
 /// - Everything else in an existing sidecar (Camera Raw edits, other metadata) is kept.
-/// - A photo the user already rated or colour-labelled is skipped entirely.
+/// - Without a rating (the default, organising only): title and keywords are written to every photo,
+///   rated or not, and the user's rating and label are never touched. A rating TravelCut wrote in an
+///   earlier version is cleared, unless the user has since changed it.
+/// - With a rating: a photo the user already rated or colour-labelled is skipped entirely.
 /// - Values TravelCut wrote before may be replaced on a re-run, unless the user has since changed
 ///   the rating. TravelCut remembers what it wrote in its own namespace to tell the two apart.
 enum XMPSidecarWriter {
@@ -16,7 +19,7 @@ enum XMPSidecarWriter {
     static let tcNS = "https://github.com/nightfade/TravelCut/ns/1.0/"
 
     struct Fields: Equatable {
-        let rating: Int              // -1 rejected, 0 unrated, 1...5
+        let rating: Int?             // -1 rejected, 0 unrated, 1...5; nil leaves the rating alone
         let title: String
         let keywords: [[String]]     // hierarchical paths, e.g. ["TravelCut", "组", "组 0042"]
     }
@@ -46,10 +49,12 @@ enum XMPSidecarWriter {
         let currentRating = Int(value(of: "Rating", ns: xmpNS, in: descriptions) ?? "0") ?? 0
         let label = value(of: "Label", ns: xmpNS, in: descriptions) ?? ""
         let ourRating = value(of: "Rating", ns: tcNS, in: descriptions).flatMap(Int.init)
-        if let ourRating {
-            if currentRating != ourRating || !label.isEmpty { return .skippedUserMarks }
-        } else if currentRating != 0 || !label.isEmpty {
-            return .skippedUserMarks
+        if fields.rating != nil {
+            if let ourRating {
+                if currentRating != ourRating || !label.isEmpty { return .skippedUserMarks }
+            } else if currentRating != 0 || !label.isEmpty {
+                return .skippedUserMarks
+            }
         }
         // Stored as a JSON array: XML normalizes newlines and tabs inside attribute values to spaces.
         let previousKeywords = (value(of: "Keywords", ns: tcNS, in: descriptions)?.data(using: .utf8))
@@ -61,8 +66,15 @@ enum XMPSidecarWriter {
         ensureNamespace("rdf", rdfNS, on: description)
         ensureNamespace("travelcut", tcNS, on: description)
 
-        setAttribute("Rating", prefix: "xmp", ns: xmpNS, value: String(fields.rating), on: description, all: descriptions)
-        setAttribute("Rating", prefix: "travelcut", ns: tcNS, value: String(fields.rating), on: description, all: descriptions)
+        if let rating = fields.rating {
+            setAttribute("Rating", prefix: "xmp", ns: xmpNS, value: String(rating), on: description, all: descriptions)
+            setAttribute("Rating", prefix: "travelcut", ns: tcNS, value: String(rating), on: description, all: descriptions)
+        } else if let ourRating {
+            if currentRating == ourRating {
+                setAttribute("Rating", prefix: "xmp", ns: xmpNS, value: "0", on: description, all: descriptions)
+            }
+            removeProperty("Rating", ns: tcNS, in: descriptions)
+        }
 
         // Title: replace only an empty title or one TravelCut wrote.
         let existingTitle = altText(element: "title", ns: dcNS, in: descriptions)
@@ -144,6 +156,16 @@ enum XMPSidecarWriter {
             for element in description.elements(forLocalName: name, uri: ns) { element.detach() }
         }
         target.addAttribute(XMLNode.attribute(withName: "\(prefix):\(name)", uri: ns, stringValue: value) as! XMLNode)
+    }
+
+    private static func removeProperty(_ name: String, ns: String, in descriptions: [XMLElement]) {
+        for description in descriptions {
+            let matching = (description.attributes ?? []).filter { $0.localName == name && $0.uri == ns }
+            for attribute in matching {
+                if let qualified = attribute.name { description.removeAttribute(forName: qualified) }
+            }
+            for element in description.elements(forLocalName: name, uri: ns) { element.detach() }
+        }
     }
 
     private static func removeElements(_ name: String, ns: String, in descriptions: [XMLElement]) {

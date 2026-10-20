@@ -35,7 +35,7 @@ struct ContentView: View {
 
             Picker("模式", selection: $model.mode) {
                 Text("视频高光").tag(AppModel.Mode.video)
-                Text("照片精选").tag(AppModel.Mode.photos)
+                Text("照片整理").tag(AppModel.Mode.photos)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -106,13 +106,13 @@ struct ContentView: View {
                         Label("保留原始分辨率、方向、帧率、HDR 与现场声", systemImage: "checkmark.shield")
                         Label("每天一个文件夹，按拍摄时间编号，文件名带主题和内容标签", systemImage: "text.badge.checkmark")
                     } else {
-                        Label("同一文件夹里连续拍的相似照片分成一组，按拍摄时间排序时组员挨在一起", systemImage: "square.stack.3d.up")
-                        Label("可选：Qwen3-VL-4B 在多张的组里挑一张并写标签；不开时按技术分挑选，主题由 MobileCLIP 判断", systemImage: "brain.head.profile")
-                        Label("每组最佳 3 星，接近的备选 2 星，全黑、全白和严重失焦标为拒绝", systemImage: "star.leadinghalf.filled")
-                        Label("标题写「组 0042 · 第 1/5」，关键字写组号和主题", systemImage: "text.badge.checkmark")
-                        Label("不改像素，不覆盖你已有的星级、颜色标签和 Camera Raw 调整", systemImage: "checkmark.shield")
-                        Toggle("用 Qwen 挑选和写标签（照片多时要好几个小时）", isOn: $model.photoUseQwen)
-                        Toggle("试运行：只生成报告，不写入星级", isOn: $model.photoDryRun)
+                        Label("整理照片，不替你挑选：同一文件夹里连续拍的相似照片分成一组，标题写「组 0042 · 第 1/5」", systemImage: "square.stack.3d.up")
+                        Label("关键字写组号、主题、地点；全黑、全白、严重失焦的标「可能是废片」", systemImage: "text.badge.checkmark")
+                        Label("可选：Qwen3-VL-4B 给多张的组写内容标签，主题默认由 MobileCLIP 判断", systemImage: "brain.head.profile")
+                        Label("不改像素，不动你已有的星级、颜色标签和 Camera Raw 调整", systemImage: "checkmark.shield")
+                        Toggle("用 Qwen 写标签（照片多时要好几个小时）", isOn: $model.photoUseQwen)
+                        Toggle("同时写入星级：每组代表 3 星、备选 2 星（不代表好坏；已有星级的照片会跳过）", isOn: $model.photoWriteStars)
+                        Toggle("试运行：只生成报告，不写入照片", isOn: $model.photoDryRun)
                         Toggle("导出画面特征（用于学习口味）", isOn: $model.photoExportFeatures)
                         Toggle("保存调试日志", isOn: $model.photoDebugLog)
                         Toggle("在线查询更精确的地点（会把照片坐标发送给 Apple）", isOn: $model.photoOnlinePlaces)
@@ -150,7 +150,7 @@ struct ContentView: View {
                 Button {
                     if model.mode == .video { model.extractHighlights() } else { model.cullPhotos() }
                 } label: {
-                    Label(model.mode == .video ? "自动挑选高光" : "自动精选照片", systemImage: "wand.and.stars")
+                    Label(model.mode == .video ? "自动挑选高光" : "自动整理照片", systemImage: "wand.and.stars")
                         .frame(minWidth: 130)
                 }
                 .buttonStyle(.borderedProminent)
@@ -187,6 +187,9 @@ final class AppModel: ObservableObject {
     }
     @Published var photoDebugLog = UserDefaults.standard.bool(forKey: "TravelCut.photoDebugLog") {
         didSet { UserDefaults.standard.set(photoDebugLog, forKey: "TravelCut.photoDebugLog") }
+    }
+    @Published var photoWriteStars = UserDefaults.standard.bool(forKey: "TravelCut.photoWriteStars") {
+        didSet { UserDefaults.standard.set(photoWriteStars, forKey: "TravelCut.photoWriteStars") }
     }
     @Published var photoOnlinePlaces = UserDefaults.standard.bool(forKey: "TravelCut.photoOnlinePlaces") {
         didSet { UserDefaults.standard.set(photoOnlinePlaces, forKey: "TravelCut.photoOnlinePlaces") }
@@ -295,6 +298,7 @@ final class AppModel: ObservableObject {
             selectedThemes: selectedThemes,
             useQwen: photoUseQwen,
             writeRatings: !photoDryRun,
+            writeStars: photoWriteStars,
             exportFeatures: photoExportFeatures,
             debugLog: photoDebugLog,
             onlinePlaces: photoOnlinePlaces
@@ -321,7 +325,9 @@ final class AppModel: ObservableObject {
                     }
                 }.value
                 lastOutputFolder = inputFolder
-                var lines = ["完成：\(summary.photoCount) 张照片分成 \(summary.groupCount) 组，2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张"]
+                var lines = ["完成：\(summary.photoCount) 张照片分成 \(summary.groupCount) 组"]
+                if configuration.writeStars { lines[0] += "，2 星以上 \(summary.starredCount) 张，拒绝 \(summary.rejectedCount) 张" }
+                else if summary.rejectedCount > 0 { lines[0] += "，\(summary.rejectedCount) 张可能是废片" }
                 if summary.skippedUserMarked > 0 { lines.append("已有你的星级或标签而跳过 \(summary.skippedUserMarked) 张") }
                 if summary.onlinePlaceFailures > 0 { lines.append("在线地点查询失败 \(summary.onlinePlaceFailures) 处，这些照片用离线城市名") }
                 if summary.qwenFailures > 0 { lines.append("Qwen 没能判断 \(summary.qwenFailures) 组，这些组按技术分挑选") }
@@ -333,8 +339,8 @@ final class AppModel: ObservableObject {
                 if configuration.debugLog { extras.append("「\(PhotoCullEngine.debugLogName)」") }
                 if !extras.isEmpty { lines.append("已在照片文件夹里生成" + extras.joined(separator: "和")) }
                 lines.append(summary.wroteRatings
-                    ? "在 Bridge 里按创建日期排序、过滤 2 星或 3 星以上即可"
-                    : "试运行：没有写入星级，结果见文件夹里的「\(PhotoCullEngine.reportName)」")
+                    ? "在 Bridge 里按创建日期排序，一组一组看；用关键字面板按组、主题、地点筛选"
+                    : "试运行：没有写入照片，结果见文件夹里的「\(PhotoCullEngine.reportName)」")
                 statusMessage = lines.joined(separator: "\n")
                 lastRunSucceeded = true
             } catch {
