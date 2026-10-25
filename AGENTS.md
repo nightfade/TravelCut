@@ -1,5 +1,7 @@
 # TravelCut AI 接手指南
 
+> **已归档。** TravelCut 的代码已迁入 [LightTable](https://github.com/nightfade/LightTable)（`Sources/TravelCutCore`），后续修改请在那里做，先读 LightTable 的 `AGENTS.md`。本文件保留作历史记录。
+
 这是 TravelCut 项目的开发与交接入口。后续 AI 或开发者开始修改前，必须完整阅读本文件，再阅读 `README.md`。不要另建内容重叠的上下文文档；产品决策、架构或交付状态发生变化时，同步更新本文件。
 
 ## 1. 项目目标

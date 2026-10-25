@@ -1,5 +1,7 @@
 # TravelCut
 
+> **本项目已并入 [LightTable](https://github.com/nightfade/LightTable)，不再更新。** 视频高光和照片整理在 LightTable 里继续维护，并加上了增稳调色和拍摄习惯，打开 App 拖入文件夹即可使用。这里的代码和 Release 保留作存档。
+
 TravelCut 是在 Mac 本地运行的旅行素材整理工具，有两个模式：
 
 - **视频高光**：分析整批视频，挑出值得保留的事件，按自然边界裁成独立视频，供剪映模板继续成片。它不生成最终影片。
